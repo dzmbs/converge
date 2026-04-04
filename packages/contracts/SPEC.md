@@ -1,22 +1,24 @@
-# RWA Hook — Business Specification
+# Converge RWA Hook -- Technical Specification
 
 ## What Is This
 
 A fixed-price AMM for trading Real World Asset tokens (e.g., ACRED, BUIDL, USDY) against their mint/redeem asset (e.g., USDC). Built as a Uniswap v4 hook, meaning it plugs directly into Uniswap's routing and aggregator network while completely replacing the default bonding curve with custom pricing logic.
 
+The system handles the full lifecycle of RWA liquidity: LP deposits, oracle-priced swaps, congestion-based dynamic fees, KYC/compliance enforcement via EIP-712-signed swap authorizations, yield deployment of idle reserves, clearing house integration for instant settlement of shortfalls, an IOU-based redemption queue for non-atomic redemptions, automated rebalancing via pluggable strategies with issuer mint/redeem rails, and epoch-based async LP exits for safe withdrawals during pending issuer settlements.
+
 ---
 
 ## The Problem
 
-RWA tokens have a known fair price set by their issuer (e.g., 1 ACRED = 1 USDC). Trading them on a traditional AMM like Uniswap v3 creates three problems:
+RWA tokens have a known fair price set by their issuer (e.g., 1 ACRED = 1 USDC). Trading them on a traditional AMM like Uniswap v3 creates four problems:
 
-1. **Unnecessary slippage.** The bonding curve charges more for larger trades. A $1M swap might cost 0.5-2% in price impact on an asset that *should* trade at par. Institutions won't accept this.
+1. **Unnecessary slippage.** The bonding curve charges more for larger trades. A $1M swap might cost 0.5-2% in price impact on an asset that should trade at par. Institutions will not accept this.
 
 2. **Poor LP economics.** Stable pairs generate minimal fees from volatility. LPs earn almost nothing, so liquidity stays thin, which makes slippage worse. Death spiral.
 
 3. **No regulatory compliance.** Many RWAs require KYC on holders, liquidity providers, or the pool itself. Uniswap has no concept of identity-gated pools.
 
-4. **No rebalancing mechanism.** When the pool gets lopsided, the only fix is minting/redeeming through the issuer — which takes hours or days. Meanwhile the pool is stuck.
+4. **No rebalancing mechanism.** When the pool gets lopsided, the only fix is minting/redeeming through the issuer -- which takes hours or days. Meanwhile the pool is stuck.
 
 ---
 
@@ -26,23 +28,31 @@ RWA tokens have a known fair price set by their issuer (e.g., 1 ACRED = 1 USDC).
 
 Every swap executes at the oracle-provided rate regardless of trade size. A $100 swap and a $1M swap get the exact same price per token. Zero slippage.
 
-The oracle rate is provided by an external contract (e.g., the RWA issuer's NAV feed). For a 1:1 stablecoin-backed RWA, the rate is simply `1e18`. For yield-bearing RWAs, the rate drifts upward over time as the underlying appreciates.
+The oracle rate is provided by an external contract implementing `IRWAOracle`. For a 1:1 stablecoin-backed RWA, the rate is simply `1e18`. For yield-bearing RWAs, the rate drifts upward over time as the underlying appreciates.
 
-**What has been implemented:**
-- `beforeSwap` hook intercepts every swap and returns a custom `BeforeSwapDelta` that completely bypasses Uniswap's xy=k math
-- Conversion functions `_convertRwaToRedeem` and `_convertRedeemToRwa` handle cross-decimal-precision math using the oracle rate
-- Only exact-input swaps are supported (user specifies how much they want to sell)
+**How it works:**
+
+- `_beforeSwap` intercepts every swap and returns a custom `BeforeSwapDelta` that completely bypasses Uniswap's xy=k math
+- `_convertWithRate(amount, rate, rwaToRedeem)` handles cross-decimal-precision math using the oracle rate. For rwaToRedeem: `(amount * rate * 10^redeemDecimals) / (10^rwaDecimals * 1e18)`. For the reverse: `(amount * 1e18 * 10^rwaDecimals) / (rate * 10^redeemDecimals)`
+- Only exact-input swaps are supported (`params.amountSpecified < 0`). Exact-output reverts with `ExactOutputNotSupported`
+- Oracle staleness is enforced via `MAX_ORACLE_STALENESS = 1 days`. Rate of zero reverts with `OracleRateOutOfBounds`
+
+**Token pipeline (AsyncSwap / Custom Curve pattern):**
+
+- INPUT: hook calls `poolManager.mint()` to create ERC6909 claims. The router settles the user's real tokens to PM after `beforeSwap` returns
+- OUTPUT: hook calls `poolManager.sync()` then `_safeTransfer` to PM then `poolManager.settle()` to deliver real ERC20 tokens
+- Net PM balance stays constant -- it is a pipeline, not a vault
 
 **What has been tested:**
-- Fuzz-tested across 256 random amounts (0.001 to 400k tokens) — output always > 0 and < input
-- Fuzz-tested that small and large swaps produce identical rates (no slippage property)
-- `getAmountOut()` view function matches actual swap output across all oracle rates (0.5x to 2.0x)
+- Fuzz-tested across random amounts (1 to 400k tokens) -- output always > 0 and <= input at 1:1 rate (`test_fuzz_swap_output_bounds`)
+- Fuzz-tested that small and large swaps produce identical rates (`test_fuzz_no_slippage`, `test_swap_fixedPrice_noSlippage`)
+- `getAmountOut()` view function matches actual swap output across oracle rates 0.5x to 2.0x (`test_fuzz_oracle_rate_consistency`)
 
 ---
 
 ### Congestion-Based Dynamic Fees
 
-Fees are not fixed. They ramp up as reserves deplete, naturally discouraging trades that would drain the pool.
+Fees ramp up as reserves deplete, naturally discouraging trades that would drain the pool.
 
 | Reserve Level | Fee |
 |---|---|
@@ -50,67 +60,126 @@ Fees are not fixed. They ramp up as reserves deplete, naturally discouraging tra
 | Between `lowThreshold` and `highThreshold` | Linear interpolation |
 | Below `lowThreshold` (e.g., 1k) | `maxFeeBips` (e.g., 1%) |
 
-This replaces the typical DEX approach of fixed fees. When the pool is healthy, fees are near-zero to attract volume. When reserves are stressed, fees spike to protect LPs.
+The effective reserve used for fee calculation includes a credit for pending issuer settlements at 50% (`PENDING_SETTLEMENT_CREDIT_BIPS = 5_000`). `_effectiveRedeemReserve` returns `redeemReserve + (pendingRedeemExpectedFromIssuer * 5000) / 10000`, and `_effectiveRwaReserve` does likewise for the RWA side.
 
 **What has been implemented:**
-- `_congestionFee()` performs linear interpolation between min and max fee based on current reserve level
+- `_congestionFee(reserve)` performs linear interpolation between min and max fee based on current reserve level
 - Fee applies to the input side of the swap (deducted before conversion)
-- Fee config is owner-updatable with validation (min <= max, lowThreshold < highThreshold)
+- Fee config is owner-updatable via `setFeeConfig(FeeConfig)` with validation: `min <= max`, `max <= 10000`, `lowThreshold < highThreshold`
 
 **What has been tested:**
-- Fees monotonically increase as reserves drain (never decrease) — tested across 30 sequential swaps
-- Fees always within configured [min, max] bounds — fuzz-tested across 256 random states
-- Zero-fee config produces exact 1:1 swaps
+- Fees monotonically increase as reserves drain -- tested across 30 sequential swaps (`test_fee_monotonically_increases_as_reserves_drain`)
+- Fees always within configured [min, max] bounds -- fuzz-tested (`test_fuzz_fee_always_within_bounds`)
+- Zero-fee config produces exact 1:1 swaps (`test_edge_zero_fee_swap`)
+- Pending issuer mint credits reduce congestion fee (`test_getCurrentFee_creditsPendingIssuerMint`)
 
 ---
 
-### Three-Tier KYC
+### Pluggable KYC Policy
 
-The hook supports three compliance modes, configurable by the pool owner:
+Compliance is handled by an external `IKYCPolicy` contract. The hook delegates all authorization decisions to the policy. The policy interface has three methods:
 
-| Mode | Who Needs KYC | Use Case |
-|---|---|---|
-| `POOL_ONLY` | Just the pool contract address | Pool is whitelisted with the RWA issuer. Trading is fully permissionless. Lightest compliance. |
-| `POOL_AND_LP` | Pool + anyone providing liquidity | LPs must be verified, but anyone can trade. Suitable for securities where holder registration is required but secondary trading is open. |
-| `FULL` | Pool + LPs + swappers | Everyone interacting with the pool must be KYC'd. Required for restricted securities. |
+- `validateSwap(SwapValidationContext, hookData)` -- called during `_beforeSwap` if a policy is set
+- `validateDeposit(account)` -- called during `deposit`
+- `validateRedemption(account)` -- called during `requestRedemption`
 
-KYC status is checked against an on-chain registry (`IKYCRegistry`). The actual identity verification happens off-chain with a KYC provider who writes verified addresses to the registry.
+The shipped policy implementation is `RegistryKYCPolicy`, which supports three modes:
 
-For swapper KYC (`FULL` mode), the user's address is passed via the swap's `hookData` parameter. This requires a trusted router or frontend that encodes `msg.sender` into the hook data.
+| Mode | Behavior |
+|---|---|
+| `NONE` | All actions permitted. Swap validation always returns true. Deposit/redemption validation always returns true. |
+| `LP_ONLY` | Swaps are unrestricted. Deposits and redemptions require the caller to be verified in the `IKYCRegistry`. |
+| `FULL_COMPLIANCE_SIGNER` | Deposits and redemptions require registry verification. Swaps require an EIP-712 signed `SwapAuthorization` from an approved compliance signer, passed via `hookData`. |
 
-**What has been implemented:**
-- `beforeSwap` checks KYC for `FULL` mode via `hookData`
-- `deposit` checks KYC for `POOL_AND_LP` and `FULL` modes
-- KYC mode and registry are owner-updatable
+**SwapAuthorization (EIP-712 signed struct):**
+- Fields: `swapper`, `hook`, `poolId`, `router`, `tokenIn`, `tokenOut`, `amountIn`, `zeroForOne`, `nonce`, `deadline`
+- The policy verifies the swap router is trusted (`trustedRouters[router]`), the compliance signer is approved (`complianceSigners[signer]`), the authorization is not expired, the nonce is correct, every field matches the actual swap context, and the EIP-712 signature is valid
+- Nonces are incremented per-swapper to prevent replay
 
 **What has been tested:**
-- `POOL_ONLY`: unverified users can swap freely
-- `POOL_AND_LP`: unverified deposits revert, verified deposits succeed
-- `FULL`: unverified swaps revert, verified swaps succeed
+- `NONE` mode: unverified users can swap freely (`test_kyc_poolOnly_anyoneCanSwap`)
+- `LP_ONLY` mode: unverified deposits revert, verified deposits succeed (`test_kyc_poolAndLP_blocksNonKYCDeposit`, `test_kyc_poolAndLP_allowsKYCDeposit`)
+- `FULL_COMPLIANCE_SIGNER` mode: untrusted router blocked (`test_kyc_full_blocksUntrustedRouter`), authorized swap succeeds (`test_kyc_full_allowsKYCSwap`), wrong swapper blocked (`test_kyc_full_blocksUnauthorizedSwapper`), replay blocked (`test_kyc_full_blocksReplay`), wrong amount blocked (`test_kyc_full_blocksWrongAmountSignature`), untrusted compliance signer blocked (`test_kyc_full_blocksUntrustedComplianceSigner`)
 
 ---
 
-### LP Deposit & Withdrawal
+### LP Deposit and Withdrawal
 
 Liquidity providers deposit RWA tokens and/or redeem assets directly into the hook contract. They receive shares (internal accounting, not an ERC20) proportional to the pool's total value.
 
-**Deposit:**
+**Deposit -- `deposit(rwaAmount, redeemAmount, minShares, deadline)`:**
 - Accepts any combination of RWA and redeem asset
 - Deposit value is normalized to redeem asset terms using the oracle rate
-- First depositor sets the share price; subsequent depositors get proportional shares
+- First depositor: `MINIMUM_SHARES = 1000` are locked to `address(1)` as dead shares. Depositor receives `depositValue - MINIMUM_SHARES`
+- Subsequent depositors: `newShares = (depositValue * totalShares) / preDepositValue`
 - Slippage protection via `minShares` parameter
+- KYC check if policy is set
 
-**Withdrawal:**
-- Burns shares and returns pro-rata RWA + redeem asset
-- If redeem asset reserves are insufficient (e.g., deployed to yield), automatically recalls from the yield vault
-- Slippage protection via `minRwaOut` and `minRedeemOut` parameters
-- Deadline parameter prevents stale transactions
+**Withdrawal -- `withdraw(sharesToBurn, minRwaOut, minRedeemOut, deadline)`:**
+- Burns shares and returns pro-rata RWA + redeem asset. Total reserves include both ERC20 balances and ERC6909 claims: `totalRwa = rwaReserve + claimsRwa`, `totalRedeem = redeemReserve + claimsRedeem + yieldBalance`
+- If ERC20 balances are insufficient, calls `_ensureRwaLiquidity` / `_ensureRedeemLiquidity` which: (1) sync claims from PM via `unlockCallback`, (2) recall from yield vault
+- Slippage protection via `minRwaOut` and `minRedeemOut`
+- Blocked while issuer settlements are pending (`ActiveSettlementsPending`)
+
+**Async LP Exit -- `requestWithdraw(sharesToQueue)` / `processExitEpoch(epochId)` / `claimExit(epochId)`:**
+- For use when instant withdrawal is blocked by pending issuer settlements
+- `requestWithdraw` moves shares from the user to the current exit epoch
+- `processExitEpoch` finalizes completed settlements, syncs all claims, recalls all yield, reserves pro-rata tokens for the epoch's total shares, and registers the epoch's claim on any remaining active settlements
+- `claimExit` distributes the epoch's reserved tokens to the user proportionally. Blocked while the epoch still has pending settlements (`pendingSettlementCount > 0`)
 
 **What has been tested:**
-- Deposit-withdraw roundtrip returns ~100% of deposited value (within 1%) — fuzz-tested across 256 amounts
-- New depositors do not dilute existing LP share value — fuzz-tested across 256 amounts
-- Share rates are proportional across different deposit amounts
-- LP share value increases over time from accumulated swap fees — verified across 20 sequential swaps
+- Deposit-withdraw roundtrip returns ~100% of deposited value within 1% (`test_fuzz_deposit_withdraw_roundtrip`)
+- New depositors do not dilute existing LP share value (`test_fuzz_new_depositor_no_dilution`)
+- Share rates proportional across different deposit amounts (`test_fuzz_deposit_share_proportionality`)
+- LP share value increases over time from accumulated swap fees (`test_share_value_accrues_from_fees`)
+- Withdraw blocked during pending settlements (`test_withdraw_revertsWhileIssuerSettlementPending`)
+- Async exit waits for settlement then claims (`test_asyncExit_waitsForIssuerSettlementThenClaims`)
+
+---
+
+### Dual Reserve Model: ERC20 and ERC6909 Claims
+
+The hook tracks two types of reserves:
+
+- **ERC20 balances** held directly in the hook's wallet (from LP deposits, clearing house, yield recalls). Tracked as `rwaReserve` / `redeemReserve`
+- **ERC6909 claims** held in the PoolManager (from swap inputs via `poolManager.mint()`). Tracked as `claimsRwa` / `claimsRedeem`
+
+Swap outputs are always paid from ERC20 reserves. Swap inputs accumulate as ERC6909 claims. Claims can be converted to ERC20 via `syncClaimsToReserves(token, amount)` (public, callable by anyone) which calls `poolManager.unlock()` triggering `unlockCallback` to `burn` claims and `take` real tokens.
+
+`_ensureRwaLiquidity` and `_ensureRedeemLiquidity` handle automatic conversion during withdrawals and issuer operations: sync claims first, then recall from yield if needed.
+
+**What has been tested:**
+- Claims accumulate from swaps (`test_claims_accumulateFromSwaps`)
+- Claims sync restores reserves (`test_claims_withdraw`)
+
+---
+
+### IOU Redemption Queue
+
+A mechanism for non-atomic RWA redemptions where users receive transferable IOU tokens.
+
+**Flow:**
+1. User calls `requestRedemption(rwaAmount)` -- transfers RWA to hook, mints IOUs at oracle rate via `IOUToken.mint()`. RWA goes to `rwaRedemptionReserve` (separate from LP reserves). Amount tracked in `totalPendingRedemptions`
+2. Owner calls `resolveIOUs(amount)` -- deposits redeem asset into `iouReserve`, decrements `totalPendingRedemptions`
+3. User calls `redeemIOU(iouAmount)` -- burns IOUs, sends redeem asset from `iouReserve` 1:1
+4. Alternatively, owner calls `airdropAndBurnIOUs(holders[])` -- batch burn and payout
+
+**IOUToken:**
+- Minimal ERC20 (76 lines). Only the hook can mint/burn (`onlyHook` modifier)
+- Transferable -- IOUs can be traded on secondary markets
+- Decimals match the redeem asset
+
+**Redemption collateral:**
+- `rwaRedemptionReserve` tracks RWA locked for pending redemptions, separate from LP reserves
+- Owner can move collateral off-chain via `transferRedemptionCollateral(recipient, amount)` for issuer settlement
+- Redemption collateral is NOT included in LP value calculations (`_totalValueWithRate` does not include `rwaRedemptionReserve`)
+
+**What has been tested:**
+- Full request-resolve-redeem cycle (`test_iou_requestAndRedeem`)
+- Batch airdrop (`test_iou_airdrop`)
+- IOU transferability (`test_iou_transferable`)
+- Cannot redeem before resolve (`test_iou_cannotRedeemBeforeResolve`)
+- Pending redemption collateral not included in LP value (`test_pendingRedemptionCollateral_notIncludedInLpValue`)
 
 ---
 
@@ -118,23 +187,22 @@ Liquidity providers deposit RWA tokens and/or redeem assets directly into the ho
 
 Idle redeem asset reserves can be deployed to external yield vaults (ERC4626-compatible) to earn additional return for LPs.
 
-**How it works:**
-1. Owner calls `deployToYield(amount)` — moves redeem asset from hook to yield vault
-2. Deployed amount is tracked in `deployedToYield` and included in LP share value calculations
-3. Owner calls `recallFromYield(amount)` — withdraws from yield vault back to hook
-4. On LP withdrawal, if hook doesn't have enough redeem asset, it automatically recalls from the vault
+**Functions:**
+- `deployToYield(amount)` -- owner-only. Moves redeem asset from hook to yield vault. Decrements `redeemReserve`, increments `deployedToYield`
+- `recallFromYield(amount)` -- owner-only. Withdraws from yield vault back to hook
+- `_recallFromYield(amount)` -- internal. Called automatically during swaps and withdrawals when reserves are insufficient
+- `_yieldVaultBalance()` -- queries `yieldVault.maxWithdraw(address(this))`. Returns 0 if no vault or nothing deployed
 
-**What has been implemented:**
-- `deployToYield` / `recallFromYield` with owner-only access
-- Automatic recall during withdrawal when reserves are insufficient
-- `deployedToYield` is included in `_totalValue()` so LP share prices reflect deployed capital
+Deployed capital is included in LP share value calculations (`_totalValueWithRate` includes `yieldBalance`). The vault can be swapped via `setYieldVault` only when `deployedToYield == 0`.
 
 **What has been tested:**
-- Deploy reduces `redeemReserve`, recall restores it
-- Share value unchanged by deployment (capital is moved, not lost)
-- Full yield deployment blocks RWA-to-redeem swaps (no available liquidity)
-- Withdrawal with most capital deployed to yield succeeds (auto-recall works)
-- Reserve accounting matches actual ERC20 balances after yield operations
+- Deploy reduces `redeemReserve`, recall restores it (`test_yield_deploy`, `test_yield_recall`)
+- Share value unchanged by deployment (`test_yield_includesInShareValue`)
+- Owner-only access control (`test_yield_onlyOwner`)
+- Auto-recall during swap (`test_edge_yield_deploy_swap_recalls_automatically`)
+- Auto-recall during withdrawal (`test_edge_yield_recall_on_withdraw`)
+- Yield accrual reflected in share value (`test_adversarial_yieldAccrual_reflected_in_shares`)
+- Yield accrual is withdrawable (`test_adversarial_yieldAccrual_withdrawable`)
 
 ---
 
@@ -142,40 +210,61 @@ Idle redeem asset reserves can be deployed to external yield vaults (ERC4626-com
 
 When the pool lacks sufficient redeem asset to service a swap, a clearing house partner (e.g., SKY, Infiniti) can front the liquidity instantly.
 
-**How it works:**
-1. User swaps RWA for redeem asset, but pool doesn't have enough
-2. Hook calculates the shortfall
-3. Hook sends RWA tokens to the clearing house as collateral
-4. Clearing house sends redeem asset back to the hook
-5. User receives the full swap output instantly
+**Flow (within `_beforeSwap` for RWA-to-redeem swaps):**
+1. Calculate `amountOut`. If `amountOut > redeemReserve`, compute `shortfall`
+2. First try to recall from yield vault (waterfall)
+3. If shortfall remains and clearing house is set: compute `rwaForClearing = _convertWithRate(shortfall, rate, false)`
+4. Approve and call `clearingHouse.settle(rwaToken, rwaForClearing, shortfall, address(this))`
+5. Verify `received >= shortfall` or revert with `ClearingHousePaymentFailed`
+6. Update: `rwaReserve -= rwaForClearing`, `redeemReserve = 0`
 
-The clearing house earns yield by holding the RWA through the redemption period. This eliminates the need for receipt tokens or async waiting from the user's perspective.
-
-**Fallback:** If no clearing house is configured, or it declines the settlement, the swap reverts with `InsufficientLiquidity`.
-
-**What has been implemented:**
-- `IClearingHouse.settle()` called mid-swap with RWA collateral
-- Input tokens are taken from PoolManager *before* clearing house settlement (ordering requirement — the hook needs the tokens to give to the clearing house)
-- Graceful fallback: if clearing house returns `false`, swap reverts
+If no clearing house is configured, or it returns `false`, the swap reverts with `InsufficientLiquidity`.
 
 **What has been tested:**
-- 600k RWA swap against 500k pool succeeds when clearing house covers shortfall
-- Pool is fully drained (`redeemReserve = 0`) after clearing house swap
-- Failed clearing house results in clean revert
-- PoolManager balance unchanged after clearing house swaps (pipeline invariant holds)
+- Swap with insufficient liquidity reverts (`test_swap_insufficientLiquidity`)
+- Yield recall covers shortfall mid-swap (`test_swap_yieldRecall_coversShortfall`)
 
 ---
 
-### Redemption Queue
+### Automated Rebalancing with Issuer Adapter
 
-A FIFO queue for handling non-atomic RWA redemptions as a fallback mechanism.
+The `rebalance()` function (publicly callable) syncs claims, recalls yield, and initiates issuer mint/redeem operations to bring reserves toward strategy targets.
 
-**How it works:**
-1. Owner calls `fulfillRedemptions(amount)` with redeem asset when the RWA issuer completes a redemption
-2. Pending requests are fulfilled in order (FIFO)
-3. Recipients call `claimRedemption(id)` to collect their tokens
+**Rebalance flow:**
+1. Finalize any completed issuer settlements
+2. Build `RebalanceState` struct with all reserve, claims, yield, and pending issuer data
+3. Call `rebalanceStrategy.computeTargets(state)` to get `targetRwaReserve` and `targetRedeemReserve`
+4. Sync claims from PM if reserves are below target
+5. Recall from yield if redeem reserves are still below target
+6. If `issuerAdapter` is set:
+   - If effective redeem assets < target and free RWA > target: initiate issuer redemption (sell RWA for redeem)
+   - If effective RWA < target and free redeem > target: initiate issuer mint (buy RWA with redeem)
+7. If redeem reserves exceed target and yield vault is set: deploy excess to yield
 
-**Current status:** The queue infrastructure is implemented but not yet integrated into the swap flow. It exists as a manual fulfillment mechanism for the owner. In the current implementation, the clearing house handles the instant settlement case, and swaps revert if neither pool reserves nor the clearing house can cover the amount.
+**ThresholdRebalanceStrategy:**
+- `computeTargets` returns `max(freeAssets * bufferBips / 10000, minReserve)` for each side
+- Config: `rwaBufferBips`, `redeemBufferBips`, `minRwaReserve`, `minRedeemReserve`
+- Owner-updatable via `setConfig`
+
+**IssuerAdapter interface:**
+- `requestRedemption(rwaToken, rwaAmount, recipient, minRedeemOut)` -- sends RWA, returns `requestId`
+- `requestMint(redeemAsset, redeemAmount, recipient, minRwaOut)` -- sends redeem, returns `requestId`
+- `settlementResult(requestId)` -- returns `(settled, outputAmount, settledAt)`
+
+**Settlement tracking:**
+- `ActiveSettlement` struct records `requestId`, `isMint`, `inputAmount`, `expectedOutputAmount`, `requestRate`, `initiatedAt`
+- `activeSettlementIds[]` array with O(1) removal via swap-and-pop
+- `pendingRwaSentToIssuer`, `pendingRedeemSentToIssuer`, `pendingRwaExpectedFromIssuer`, `pendingRedeemExpectedFromIssuer` track in-flight amounts
+- Pending expected values are included in `_totalValueWithRate` so LP share prices remain accurate during settlements
+- `_finalizeSettlement` distributes output proportionally between the live pool and any processed exit epochs that claimed the settlement
+
+**What has been tested:**
+- Rebalance syncs claims and redeploys excess (`test_rebalance_syncsClaimsAndRedeploysExcess`)
+- Rebalance initiates issuer mint for RWA shortfall (`test_rebalance_initiatesIssuerMint_forRwaShortfall`)
+- Rebalance initiates issuer redemption for redeem shortfall (`test_rebalance_initiatesIssuerRedemption_forRedeemShortfall`)
+- Settlement finalization adds reserves (`test_finalizeSettlement_addsRwaReserve`)
+- Rebalance does not overcorrect with pending mint (`test_rebalance_doesNotOvercorrectWithPendingMint`)
+- LP value preserved through rebalance cycle
 
 ---
 
@@ -185,17 +274,20 @@ The hook uses the following v4 permissions:
 
 | Permission | Purpose |
 |---|---|
-| `beforeInitialize` | Marks pool as initialized, prevents re-initialization |
-| `beforeSwap` | Intercepts swaps, applies fixed pricing + fees + KYC |
+| `beforeInitialize` | Validates token pair matches `rwaToken`/`redeemAsset`, marks pool as initialized, prevents re-initialization |
+| `beforeSwap` | Intercepts swaps, applies fixed pricing + fees + KYC, returns custom `BeforeSwapDelta` |
 | `beforeSwapReturnDelta` | Returns custom delta that bypasses xy=k entirely |
-| `beforeAddLiquidity` | Blocks direct `modifyLiquidity` calls (LP must use `deposit()`) |
+| `beforeAddLiquidity` | Reverts with `HookNotImplemented` -- LP must use `deposit()` |
+| `beforeRemoveLiquidity` | Reverts with `HookNotImplemented` -- LP must use `withdraw()` |
 
-**Token pipeline:** The PoolManager holds a buffer of both tokens. During a swap, the hook takes input from PM and settles output to PM. The router then settles input to PM and takes output from PM. Net PM balance stays constant — it's just a pipeline.
+**Two-step ownership transfer:**
+- `proposeOwnership(newOwner)` sets `pendingOwner`
+- `acceptOwnership()` callable only by `pendingOwner`, calls `_transferOwnership`
 
 **What has been tested:**
-- PM balance invariant verified across 20 bidirectional swaps
-- PM balance invariant holds when all swaps go one direction (drain scenario)
-- Proper PM seeding via `unlock` / `settle` / `clear` pattern (using `HookTestRouter`)
+- Pool hijack with wrong tokens blocked (`test_adversarial_poolHijack_blocked`)
+- Two-step ownership works (`test_admin_twoStepOwnership`)
+- Owner-only access enforced (`test_admin_onlyOwner`)
 
 ---
 
@@ -203,25 +295,45 @@ The hook uses the following v4 permissions:
 
 ```
                           UNISWAP V4 POOLMANAGER
-                                  │
-                     ┌────────────┴────────────┐
-                     │       RWAHook            │
-                     │                          │
-                     │  beforeSwap()            │
-                     │  ├─ KYC check            │
-                     │  ├─ Fixed-price calc     │
-                     │  ├─ Congestion fee       │
-                     │  ├─ Reserve update       │
-                     │  ├─ Clearing house       │──── IClearingHouse
-                     │  └─ Delta accounting     │     (SKY, Infiniti)
-                     │                          │
-                     │  deposit() / withdraw()  │
-                     │  ├─ Share accounting     │
-                     │  └─ Auto yield recall    │──── IYieldVault
-                     │                          │     (Aave, Morpho, etc.)
-                     │  KYC enforcement         │──── IKYCRegistry
-                     │  Price feed              │──── IRWAOracle
-                     └──────────────────────────┘
+                                  |
+                     +------------+------------+
+                     |       RWAHook            |
+                     |                          |
+                     |  _beforeSwap()           |
+                     |  +- KYC policy check     |---- IKYCPolicy
+                     |  +- Fixed-price calc     |     +-- RegistryKYCPolicy
+                     |  +- Congestion fee       |         +-- IKYCRegistry
+                     |  +- ERC6909 claim mint   |         +-- EIP-712 signer auth
+                     |  +- Reserve waterfall    |
+                     |  |  +- ERC20 reserve     |
+                     |  |  +- Yield vault       |---- IYieldVault (ERC4626)
+                     |  |  +- Clearing house    |---- IClearingHouse
+                     |  +- PM settle pipeline   |
+                     |                          |
+                     |  deposit() / withdraw()  |
+                     |  +- Share accounting     |
+                     |  +- Auto claim sync      |
+                     |  +- Auto yield recall    |
+                     |                          |
+                     |  requestWithdraw()       |
+                     |  processExitEpoch()      |
+                     |  claimExit()             |
+                     |  +- Epoch segregation    |
+                     |  +- Settlement tracking  |
+                     |                          |
+                     |  requestRedemption()     |
+                     |  resolveIOUs()           |---- IOUToken (ERC20)
+                     |  redeemIOU()             |
+                     |  airdropAndBurnIOUs()    |
+                     |                          |
+                     |  rebalance()             |---- IRebalanceStrategy
+                     |  +- Claim sync           |     +-- ThresholdRebalanceStrategy
+                     |  +- Yield recall/deploy  |
+                     |  +- Issuer mint/redeem   |---- IIssuerAdapter
+                     |  +- Settlement finalize  |
+                     |                          |
+                     |  Price feed              |---- IRWAOracle
+                     +--+--+--+--+--+--+--+--+-+
 ```
 
 ---
@@ -230,51 +342,65 @@ The hook uses the following v4 permissions:
 
 | Contract | Lines | Purpose |
 |---|---|---|
-| `RWAHook.sol` | ~580 | Core hook: swaps, LP management, yield, clearing house, KYC, fees |
-| `IKYCRegistry.sol` | 8 | Interface: on-chain KYC verification |
-| `IRWAOracle.sol` | 11 | Interface: RWA exchange rate feed |
-| `IClearingHouse.sol` | 22 | Interface: instant settlement for liquidity gaps |
-| `IYieldVault.sol` | 17 | Interface: ERC4626-style yield vault |
+| `RWAHook.sol` | 1141 | Core hook: swaps, LP management, dual reserve model, yield, clearing house, IOU redemption, rebalancing, issuer settlement, async exits, KYC enforcement, fees |
+| `IOUToken.sol` | 76 | Minimal ERC20 receipt token for non-atomic redemptions. Hook-only mint/burn |
+| `RegistryKYCPolicy.sol` | 148 | Registry-backed KYC policy with three modes (NONE, LP_ONLY, FULL_COMPLIANCE_SIGNER). EIP-712 signed swap authorizations |
+| `ThresholdRebalanceStrategy.sol` | 68 | Configurable minimum reserves + buffer ratios for rebalancing |
+| `IKYCPolicy.sol` | 20 | Interface: pluggable compliance policy with swap/deposit/redemption validation |
+| `IKYCRegistry.sol` | 8 | Interface: on-chain KYC verification registry |
+| `IRWAOracle.sol` | 15 | Interface: RWA exchange rate feed with staleness tracking |
+| `IClearingHouse.sol` | 25 | Interface: instant settlement for liquidity gaps |
+| `IYieldVault.sol` | 20 | Interface: ERC4626-style yield vault |
+| `IRebalanceStrategy.sol` | 28 | Interface: rebalance target computation with full state input |
+| `IIssuerAdapter.sol` | 34 | Interface: issuer mint/redeem rail with settlement tracking |
+
+**Total source:** ~1583 lines across 11 contracts/interfaces.
+**Test file:** 1474 lines (`RWAHook.t.sol`) plus test utilities.
 
 ---
 
 ## Test Coverage
 
-### Unit Tests (34 tests)
+### 71 Tests Total
 
-| Category | Count | Coverage |
+| Category | Count | Tests |
 |---|---|---|
-| Deposits | 6 | Both tokens, slippage protection, deadline, zero amount |
-| Withdrawals | 3 | Full, partial, insufficient shares |
-| Swaps | 5 | Both directions, fixed price proof, insufficient liquidity, exact output rejection |
-| Fees | 1 | Congestion-based fee increase |
-| KYC | 5 | All three modes, block and allow scenarios |
-| Clearing House | 2 | Shortfall coverage, graceful failure |
-| Yield | 4 | Deploy, recall, share value, access control |
-| Oracle | 1 | Rate change effects |
-| Admin | 4 | Ownership, fee config, validation |
-| View Functions | 2 | Total value, amount out prediction |
+| Deposits | 6 | `test_deposit_redeemOnly`, `test_deposit_rwaOnly`, `test_deposit_zeroAmount_reverts`, `test_deposit_both`, `test_deposit_deadlineExpired`, `test_deposit_slippageProtection` |
+| Withdrawals | 3 | `test_withdraw_full`, `test_withdraw_partial`, `test_withdraw_insufficientShares` |
+| Swaps | 5 | `test_swap_redeemForRwa`, `test_swap_rwaForRedeem`, `test_swap_fixedPrice_noSlippage`, `test_swap_insufficientLiquidity`, `test_swap_yieldRecall_coversShortfall` |
+| Fees | 2 | `test_fee_congestionBased`, `test_fee_monotonically_increases_as_reserves_drain` |
+| KYC (basic) | 3 | `test_kyc_poolOnly_anyoneCanSwap`, `test_kyc_poolAndLP_blocksNonKYCDeposit`, `test_kyc_poolAndLP_allowsKYCDeposit` |
+| KYC (full compliance signer) | 6 | `test_kyc_full_blocksUntrustedRouter`, `test_kyc_full_allowsKYCSwap`, `test_kyc_full_blocksUnauthorizedSwapper`, `test_kyc_full_blocksReplay`, `test_kyc_full_blocksWrongAmountSignature`, `test_kyc_full_blocksUntrustedComplianceSigner` |
+| IOU Redemption | 4 | `test_iou_requestAndRedeem`, `test_iou_airdrop`, `test_iou_transferable`, `test_iou_cannotRedeemBeforeResolve` |
+| Yield | 4 | `test_yield_deploy`, `test_yield_recall`, `test_yield_includesInShareValue`, `test_yield_onlyOwner` |
+| Oracle | 1 | `test_oracle_rateChange` |
+| Admin | 4 | `test_admin_twoStepOwnership`, `test_admin_onlyOwner`, `test_admin_setFeeConfig`, `test_admin_invalidFeeConfig` |
+| Claims Management | 2 | `test_claims_accumulateFromSwaps`, `test_claims_withdraw` |
+| View Functions | 3 | `test_totalValue`, `test_getAmountOut`, `test_maxSwappableAmount` |
+| Share Value | 2 | `test_share_value_accrues_from_fees`, `test_pendingRedemptionCollateral_notIncludedInLpValue` |
+| Fuzz | 8 | `test_fuzz_swap_output_bounds`, `test_fuzz_deposit_withdraw_roundtrip`, `test_fuzz_no_slippage`, `test_fuzz_new_depositor_no_dilution`, `test_fuzz_swap_both_directions`, `test_fuzz_deposit_share_proportionality`, `test_fuzz_fee_always_within_bounds`, `test_fuzz_oracle_rate_consistency` |
+| Edge Cases | 5 | `test_edge_minimum_swap`, `test_edge_zero_fee_swap`, `test_edge_deposit_then_swap_then_withdraw`, `test_edge_yield_deploy_swap_recalls_automatically`, `test_edge_yield_recall_on_withdraw` |
+| Adversarial | 3 | `test_adversarial_poolHijack_blocked`, `test_adversarial_yieldAccrual_reflected_in_shares`, `test_adversarial_yieldAccrual_withdrawable` |
+| Multi-User Stress | 1 | `test_multiUser_full_lifecycle` (4 users, 6 phases: deposit/swap/yield/oracle-change/more-swaps/recall-and-withdraw) |
+| Rebalance + Issuer | 7 | `test_rebalance_syncsClaimsAndRedeploysExcess`, `test_rebalance_initiatesIssuerMint_forRwaShortfall`, `test_finalizeSettlement_addsRwaReserve`, `test_rebalance_doesNotOvercorrectWithPendingMint`, `test_rebalance_initiatesIssuerRedemption_forRedeemShortfall`, `test_getCurrentFee_creditsPendingIssuerMint`, `test_withdraw_revertsWhileIssuerSettlementPending` |
+| Async Exit | 1 | `test_asyncExit_waitsForIssuerSettlementThenClaims` |
+| Gas Snapshots | 2 | `test_gas_swap`, `test_gas_deposit` |
 
-### Battle Tests (23 tests, ~1,500 fuzz runs)
+---
 
-| Category | Count | What It Proves |
+## Gas Profile
+
+Measured via `vm.snapshotGasLastCall` in Foundry:
+
+| Operation | Gas (RWAHookTest) | Gas (RWAHookBattleTest) |
 |---|---|---|
-| PM Pipeline Invariant | 2 | PoolManager balance unchanged across all swaps |
-| Gas Snapshots | 4 | Regression baselines for swap, deposit, withdraw |
-| Fuzz: Swap Properties | 2 | Output bounds, direction independence, reserve consistency |
-| Fuzz: LP Accounting | 3 | Roundtrip recovery, share proportionality, no dilution |
-| Fuzz: Oracle | 1 | View function matches actual swap across all rates |
-| Fuzz: Fees | 2 | Monotonicity, bounds |
-| Fuzz: Fixed Price | 1 | No size-based slippage |
-| Share Value | 1 | LPs earn from swap fees |
-| Multi-User Stress | 1 | 5 users, 6 phases: deposit/swap/yield/rate-change/withdraw |
-| Clearing House Stress | 1 | Large shortfall with PM invariant check |
-| Edge Cases | 5 | Minimum swap, zero fees, yield drain, auto-recall |
+| Swap (redeem for RWA, 10k) | 172,752 | 177,326 |
+| Swap (RWA for redeem, 10k) | -- | 177,304 |
+| Swap (minimum amount) | -- | 177,326 |
+| Deposit (100k redeem) | 93,679 | 85,217 |
+| Withdraw (all shares) | -- | 32,370 |
 
-### Bugs Found by Tests
-
-1. **Clearing house reserve accounting** — `redeemReserve` was set to a wrong value after clearing house settlement. Fixed to `redeemReserve = 0`.
-2. **Withdraw yield recall double-counting** — `_recallFromYield` adds to `redeemReserve`, then withdrawal subtracted the wrong offset. Fixed to subtract `redeemOut` from the updated `redeemReserve`.
+These are within v4's recommended hook gas budgets (target <150k for beforeSwap, hard ceiling 300k with external calls). Swap gas includes the full `_beforeSwap` path with oracle check, fee calculation, claim minting, reserve update, and PM settlement.
 
 ---
 
@@ -282,24 +408,14 @@ The hook uses the following v4 permissions:
 
 | Feature | Status | Notes |
 |---|---|---|
-| Exact-output swaps | Rejected (reverts) | Only exact-input supported |
-| ERC20 LP token | Not implemented | Shares are internal accounting only (not transferable) |
-| Timelock on admin operations | Not implemented | Owner can change fee config, KYC mode, modules instantly |
-| Reentrancy guard | Not implemented | Clearing house call is an external call mid-swap |
-| Mixed-decimal testing | Not done | All tests use 18-decimal tokens; 6-decimal USDC needs dedicated testing |
-| Hook address mining | Not done | Production deployment needs CREATE2 salt mining for permission-bit-encoded address |
-| Fork testing | Not done | Not tested against a real deployed PoolManager |
-| Redemption queue integration | Partial | Queue exists but is not triggered by swaps; only manual fulfillment |
-| Multi-pool support | Not implemented | One hook instance = one RWA/redeem pair |
-
----
-
-## Gas Profile
-
-| Operation | Gas |
-|---|---|
-| Swap (either direction) | ~189k |
-| Deposit | ~91k |
-| Withdraw | ~98k |
-
-These are within v4's recommended hook gas budgets (target <150k for beforeSwap, hard ceiling 300k with external calls).
+| Exact-output swaps | Rejected (reverts) | Only exact-input supported. `params.amountSpecified >= 0` reverts with `ExactOutputNotSupported` |
+| ERC20 LP token | Not implemented | Shares are internal accounting only (`mapping(address => uint256) shares`), not transferable |
+| Timelock on admin operations | Not implemented | Owner can change fee config, KYC policy, oracle, modules, and yield vault instantly |
+| Mixed-decimal testing | Not done | All tests use 18-decimal tokens; 6-decimal USDC needs dedicated testing. Conversion math supports it via `rwaDecimals`/`redeemDecimals` |
+| Hook address mining | Not done | Production deployment needs CREATE2 salt mining for permission-bit-encoded address. Tests use `deployCodeTo` |
+| Fork testing | Not done | Not tested against a real deployed PoolManager or production issuer adapters |
+| Multi-pool support | Not implemented | One hook instance = one RWA/redeem pair. `poolInitialized` flag prevents re-initialization |
+| Clearing house integration test | Partial | `IClearingHouse` integration is coded in swap flow but no dedicated clearing house mock test exists in the current test file. The waterfall works (yield recall is tested) but the clearing house branch is only indirectly tested via `test_swap_insufficientLiquidity` |
+| Exit epoch edge cases | Minimal | Only one test (`test_asyncExit_waitsForIssuerSettlementThenClaims`). Multi-user epoch exits, partial claims, and epoch rollover are not tested |
+| Issuer adapter fuzz testing | Not done | Rebalance + settlement tests are deterministic only. No fuzz testing of settlement amounts, partial fills, or timing |
+| Fee-on-transfer token support | Not implemented | `_safeTransfer`/`_safeTransferFrom` do not account for transfer fees |

@@ -1,0 +1,12 @@
+{
+  "id": "morpho-usdc",
+  "label": "Morpho USDC Vault",
+  "type": "morpho",
+  "asset": "USDC",
+  "netApyBps": 512,
+  "availableLiquidity": 15000000,
+  "capacity": 1500000,
+  "recallPenaltyBps": 12,
+  "riskPenaltyBps": 20,
+  "notes": "Example normalized snapshot. Replace with current official values before analysis."
+}

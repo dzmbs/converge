@@ -23,7 +23,7 @@ export function SwapCard() {
               Asset Swap
             </h1>
             <p className="text-[11px] font-medium uppercase tracking-wider text-on-surface-variant">
-              Antibes Liquidity Engine
+              Converge Liquidity Engine
             </p>
           </div>
           <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-surface-container-low rounded-lg border border-outline-variant/15 mt-0.5">

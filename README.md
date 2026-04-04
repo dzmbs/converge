@@ -1,6 +1,6 @@
-# Antibes
+# Converge
 
-Monorepo root for Antibes.
+Monorepo root for Converge.
 
 Current workspace:
 

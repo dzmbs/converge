@@ -1,0 +1,71 @@
+{
+  "name": "base-usdc-rwa",
+  "days": 30,
+  "initialState": {
+    "liquidRwa": 500000,
+    "liquidRedeem": 500000,
+    "shares": 1000000
+  },
+  "market": {
+    "oracleRate": 1,
+    "swapFeeBps": 10,
+    "pendingAssetHaircutBps": 25
+  },
+  "policy": {
+    "settlementDelayDays": 2,
+    "minLiquidRedeem": 180000,
+    "targetLiquidRedeem": 250000,
+    "maxLiquidRedeem": 350000,
+    "minLiquidRwa": 180000,
+    "targetLiquidRwa": 250000,
+    "maxLiquidRwa": 350000,
+    "useClearingHouse": true,
+    "useIouFallback": true,
+    "clearingCostBps": 35
+  },
+  "venues": [
+    {
+      "snapshot": "../snapshots/aave-usdc.example.json"
+    },
+    {
+      "snapshot": "../snapshots/morpho-usdc.example.json"
+    }
+  ],
+  "scenario": {
+    "daily": {
+      "buyRwaRedeemIn": 45000,
+      "sellRwaIn": 40000,
+      "lpDepositRedeem": 0,
+      "lpDepositRwa": 0,
+      "lpWithdrawRedeemDemand": 0
+    },
+    "windows": [
+      {
+        "startDay": 1,
+        "endDay": 7,
+        "flows": {
+          "buyRwaRedeemIn": 35000,
+          "sellRwaIn": 30000
+        }
+      },
+      {
+        "startDay": 8,
+        "endDay": 18,
+        "flows": {
+          "buyRwaRedeemIn": 55000,
+          "sellRwaIn": 45000
+        }
+      }
+    ],
+    "shocks": [
+      {
+        "day": 10,
+        "oracleRate": 1.01
+      },
+      {
+        "day": 20,
+        "lpWithdrawRedeemDemand": 50000
+      }
+    ]
+  }
+}

@@ -17,7 +17,7 @@ const features = [
     icon: "bolt",
     title: "Atomic Settlement",
     description:
-      "Bypass the legacy 3-day clearing cycle. Settlements on Antibes occur within 800ms of transaction validation.",
+      "Bypass the legacy 3-day clearing cycle. Settlements on Converge occur within 800ms of transaction validation.",
     color: "bg-secondary/10",
     iconColor: "text-secondary",
   },

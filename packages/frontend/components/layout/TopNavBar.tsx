@@ -21,7 +21,7 @@ export function TopNavBar() {
         {/* Left: Logo */}
         <Link href="/" className="shrink-0">
           <span className="font-logo font-extrabold text-primary-container text-xl md:text-[22px] tracking-tight">
-            ANTIBES
+            CONVERGE
           </span>
         </Link>
 

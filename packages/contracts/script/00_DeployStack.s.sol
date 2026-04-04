@@ -125,7 +125,7 @@ contract DeployStackScript is BaseScript {
         }
 
         IOUToken iouToken = new IOUToken(
-            vm.envOr("IOU_NAME", string("Antibes Redemption IOU")),
+            vm.envOr("IOU_NAME", string("Converge Redemption IOU")),
             vm.envOr("IOU_SYMBOL", string("aIOU")),
             address(hook),
             config.redeemDecimals
@@ -223,7 +223,7 @@ contract DeployStackScript is BaseScript {
         if (deployed.rwaToken == address(0)) {
             deployed.rwaToken = address(
                 new MintableToken(
-                    vm.envOr("RWA_NAME", string("Antibes Test RWA")),
+                    vm.envOr("RWA_NAME", string("Converge Test RWA")),
                     vm.envOr("RWA_SYMBOL", string("aRWA")),
                     config.rwaDecimals,
                     deployer,
@@ -235,7 +235,7 @@ contract DeployStackScript is BaseScript {
         if (deployed.redeemAsset == address(0)) {
             deployed.redeemAsset = address(
                 new MintableToken(
-                    vm.envOr("REDEEM_NAME", string("Antibes Test USD")),
+                    vm.envOr("REDEEM_NAME", string("Converge Test USD")),
                     vm.envOr("REDEEM_SYMBOL", string("aUSD")),
                     config.redeemDecimals,
                     deployer,

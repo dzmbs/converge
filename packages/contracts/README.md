@@ -1,6 +1,6 @@
-## Antibes Contracts
+## Converge Contracts
 
-This package contains the Uniswap v4 hook, policies, mocks, tests, and deployment scripts for the Antibes liquidity engine.
+This package contains the Uniswap v4 hook, policies, mocks, tests, and deployment scripts for the Converge liquidity engine.
 
 ## Commands
 

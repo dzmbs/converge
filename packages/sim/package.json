@@ -1,0 +1,9 @@
+{
+  "name": "@converge/sim",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "run:base": "node src/run-scenario.mjs scenarios/base-usdc-rwa.json",
+    "run:stress": "node src/run-scenario.mjs scenarios/stressed-redemptions.json"
+  }
+}

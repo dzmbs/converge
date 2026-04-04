@@ -87,7 +87,7 @@ export default function SettlementPage() {
             </span>
             <div className="space-y-2">
               <h4 className="text-[11px] font-medium uppercase tracking-wider text-on-surface">
-                Antibes Institutional Safeguards
+                Converge Institutional Safeguards
               </h4>
               <p className="text-[11px] text-on-surface-variant leading-relaxed uppercase tracking-wider">
                 Settlement delays are a function of high-yield asset lockups. By

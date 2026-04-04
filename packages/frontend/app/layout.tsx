@@ -6,7 +6,7 @@ import "./globals.css";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "Antibes Institutional | The Digital Atrium",
+  title: "Converge Institutional | The Digital Atrium",
   description:
     "The first compliance-first RWA swap protocol, backed by clearing house liquidity from SKY and Inifi.",
 };

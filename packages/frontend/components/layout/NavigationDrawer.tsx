@@ -36,7 +36,7 @@ export function NavigationDrawer({ activeHref = "/" }: NavigationDrawerProps) {
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-5 border-b border-outline-variant/15">
           <span className="font-logo font-extrabold text-primary-container text-lg tracking-tight">
-            ANTIBES
+            CONVERGE
           </span>
           <button
             onClick={() => setOpen(false)}
@@ -84,7 +84,7 @@ export function NavigationDrawer({ activeHref = "/" }: NavigationDrawerProps) {
           <p className="text-[11px] text-on-surface-variant leading-relaxed">
             Regulated institutional interface.
             <br />
-            &copy; {new Date().getFullYear()} Antibes.
+            &copy; {new Date().getFullYear()} Converge.
           </p>
         </div>
       </nav>

@@ -20,10 +20,10 @@ export function Footer() {
         {/* Logo + copyright left */}
         <div className="flex flex-col gap-1 shrink-0">
           <span className="font-logo font-extrabold text-primary-container text-lg tracking-tight">
-            ANTIBES
+            CONVERGE
           </span>
           <p className="text-on-surface-variant text-[11px] leading-relaxed">
-            &copy; {new Date().getFullYear()} Antibes. Regulated Entity.
+            &copy; {new Date().getFullYear()} Converge. Regulated Entity.
           </p>
         </div>
 
@@ -53,7 +53,7 @@ export function Footer() {
       {/* Mobile footer — stacked centered */}
       <div className="md:hidden flex flex-col items-center gap-5 px-8 py-10 mb-16">
         <span className="font-logo font-extrabold text-primary-container text-lg tracking-tight">
-          ANTIBES
+          CONVERGE
         </span>
         <div className="flex gap-6">
           {mobileLinks.map((label) => (
@@ -67,7 +67,7 @@ export function Footer() {
           ))}
         </div>
         <p className="text-[11px] text-on-surface-variant text-center leading-relaxed">
-          &copy; {new Date().getFullYear()} Antibes. Regulated Entity.
+          &copy; {new Date().getFullYear()} Converge. Regulated Entity.
         </p>
       </div>
 

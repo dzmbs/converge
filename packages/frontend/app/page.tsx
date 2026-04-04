@@ -118,7 +118,7 @@ export default function HomePage() {
                   Transparency by Architecture
                 </h2>
                 <p className="text-on-surface-variant text-lg leading-relaxed">
-                  Antibes Institutional is founded on the principle of Radical
+                  Converge Institutional is founded on the principle of Radical
                   Verifiability. Every asset is mapped to a legal deed, verified
                   by on-chain oracles, and audited in real-time.
                 </p>

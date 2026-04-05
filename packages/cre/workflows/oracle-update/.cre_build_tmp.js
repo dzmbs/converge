@@ -17588,23 +17588,17 @@ function deviationExceeds(oldRate, newRate, thresholdBips) {
   const diff = newRate > oldRate ? newRate - oldRate : oldRate - newRate;
   return diff * 10000n > oldRate * BigInt(thresholdBips);
 }
-var onCronTrigger = (runtime2) => {
-  const config = runtime2.config;
-  const evmConfig = config.evms[0];
-  runtime2.log("Oracle update workflow triggered");
+function updateChain(runtime2, evmConfig, newRateFixed, fetchedRate) {
   const network282 = getNetwork({
     chainFamily: "evm",
     chainSelectorName: evmConfig.chainSelectorName,
     isTestnet: true
   });
-  if (!network282)
-    throw new Error(`Network not found: ${evmConfig.chainSelectorName}`);
+  if (!network282) {
+    runtime2.log(`Network not found: ${evmConfig.chainSelectorName}, skipping`);
+    return `${evmConfig.chainSelectorName}: skipped (network not found)`;
+  }
   const evmClient = new cre.capabilities.EVMClient(network282.chainSelector.selector);
-  const httpClient = new cre.capabilities.HTTPClient;
-  const fetchedRate = httpClient.sendRequest(runtime2, fetchIssuerRate, consensusMedianAggregation())(config).result();
-  runtime2.log(`Fetched issuer rate: ${fetchedRate}`);
-  const newRateFixed = rateToFixed(fetchedRate);
-  runtime2.log(`New rate (fixed-point): ${newRateFixed.toString()}`);
   let currentRate = 0n;
   try {
     const rateCalldata = encodeFunctionData({
@@ -17628,14 +17622,13 @@ var onCronTrigger = (runtime2) => {
       currentRate = rate;
     }
   } catch {
-    runtime2.log("Could not read on-chain rate (contract may not be deployed yet)");
+    runtime2.log(`[${evmConfig.chainSelectorName}] Could not read on-chain rate`);
   }
-  runtime2.log(`Current on-chain rate: ${currentRate.toString()}`);
-  if (!deviationExceeds(currentRate, newRateFixed, config.deviationThresholdBips)) {
-    runtime2.log(`Rate deviation below threshold (${config.deviationThresholdBips} bips), skipping update`);
-    return "No update needed";
+  runtime2.log(`[${evmConfig.chainSelectorName}] Current on-chain rate: ${currentRate.toString()}`);
+  if (!deviationExceeds(currentRate, newRateFixed, runtime2.config.deviationThresholdBips)) {
+    runtime2.log(`[${evmConfig.chainSelectorName}] Below threshold, skipping`);
+    return `${evmConfig.chainSelectorName}: no update needed`;
   }
-  runtime2.log(`Rate deviation exceeds ${config.deviationThresholdBips} bips, submitting report`);
   const reportData = encodeAbiParameters([{ type: "uint256" }], [newRateFixed]);
   const reportRequest = prepareReportRequest(reportData);
   const report2 = runtime2.report(reportRequest).result();
@@ -17643,12 +17636,28 @@ var onCronTrigger = (runtime2) => {
     receiver: evmConfig.oracleAddress,
     report: report2
   }).result();
-  if (writeResult.txStatus !== TxStatus.SUCCESS) {
-    throw new Error(`Oracle update TX failed: ${writeResult.errorMessage || writeResult.txStatus}`);
-  }
   const txHash = bytesToHex(writeResult.txHash || new Uint8Array(32));
-  runtime2.log(`Oracle updated to ${newRateFixed.toString()}. TX: ${txHash}`);
-  return `Rate updated: ${fetchedRate} — tx: ${txHash}`;
+  if (writeResult.txStatus !== TxStatus.SUCCESS) {
+    runtime2.log(`[${evmConfig.chainSelectorName}] TX failed: ${writeResult.errorMessage || writeResult.txStatus}`);
+    return `${evmConfig.chainSelectorName}: failed`;
+  }
+  runtime2.log(`[${evmConfig.chainSelectorName}] Updated to ${newRateFixed.toString()}. TX: ${txHash}`);
+  return `${evmConfig.chainSelectorName}: updated — tx: ${txHash}`;
+}
+var onCronTrigger = (runtime2) => {
+  const config = runtime2.config;
+  runtime2.log("Oracle update workflow triggered");
+  const httpClient = new cre.capabilities.HTTPClient;
+  const fetchedRate = httpClient.sendRequest(runtime2, fetchIssuerRate, consensusMedianAggregation())(config).result();
+  runtime2.log(`Fetched issuer rate: ${fetchedRate}`);
+  const newRateFixed = rateToFixed(fetchedRate);
+  runtime2.log(`New rate (fixed-point): ${newRateFixed.toString()}`);
+  const results = [];
+  for (const evmConfig of config.evms) {
+    const result = updateChain(runtime2, evmConfig, newRateFixed, fetchedRate);
+    results.push(result);
+  }
+  return results.join(" | ");
 };
 function initWorkflow(config) {
   const cronTrigger = new cre.capabilities.CronCapability;

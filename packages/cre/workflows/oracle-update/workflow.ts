@@ -98,40 +98,27 @@ function deviationExceeds(oldRate: bigint, newRate: bigint, thresholdBips: numbe
 
 // ─── Workflow ──────────────────────────────────────────────────────────
 
-export const onCronTrigger = (runtime: Runtime<Config>): string => {
-	const config = runtime.config
-	const evmConfig = config.evms[0]
-
-	runtime.log('Oracle update workflow triggered')
-
-	// 1. Get network and create EVM client
+/** Updates oracle on a single chain. Returns a status string. */
+function updateChain(
+	runtime: Runtime<Config>,
+	evmConfig: Config['evms'][number],
+	newRateFixed: bigint,
+	fetchedRate: number,
+): string {
 	const network = getNetwork({
 		chainFamily: 'evm',
 		chainSelectorName: evmConfig.chainSelectorName,
 		isTestnet: true,
 	})
-	if (!network) throw new Error(`Network not found: ${evmConfig.chainSelectorName}`)
+	if (!network) {
+		runtime.log(`Network not found: ${evmConfig.chainSelectorName}, skipping`)
+		return `${evmConfig.chainSelectorName}: skipped (network not found)`
+	}
 
 	const evmClient = new cre.capabilities.EVMClient(network.chainSelector.selector)
 
-	// 2. Fetch rate from issuer API with DON consensus (median)
-	const httpClient = new cre.capabilities.HTTPClient()
-	const fetchedRate = httpClient
-		.sendRequest(
-			runtime,
-			fetchIssuerRate,
-			consensusMedianAggregation(),
-		)(config)
-		.result()
-
-	runtime.log(`Fetched issuer rate: ${fetchedRate}`)
-
-	const newRateFixed = rateToFixed(fetchedRate)
-	runtime.log(`New rate (fixed-point): ${newRateFixed.toString()}`)
-
-	// 3. Read current on-chain rate from CREOracleConsumer
+	// Read current on-chain rate
 	let currentRate = 0n
-
 	try {
 		const rateCalldata = encodeFunctionData({
 			abi: CREOracleAbi,
@@ -158,22 +145,18 @@ export const onCronTrigger = (runtime: Runtime<Config>): string => {
 			currentRate = rate
 		}
 	} catch {
-		runtime.log('Could not read on-chain rate (contract may not be deployed yet)')
+		runtime.log(`[${evmConfig.chainSelectorName}] Could not read on-chain rate`)
 	}
 
-	runtime.log(`Current on-chain rate: ${currentRate.toString()}`)
+	runtime.log(`[${evmConfig.chainSelectorName}] Current on-chain rate: ${currentRate.toString()}`)
 
-	// 4. Check deviation threshold
-	if (!deviationExceeds(currentRate, newRateFixed, config.deviationThresholdBips)) {
-		runtime.log(
-			`Rate deviation below threshold (${config.deviationThresholdBips} bips), skipping update`,
-		)
-		return 'No update needed'
+	// Check deviation threshold
+	if (!deviationExceeds(currentRate, newRateFixed, runtime.config.deviationThresholdBips)) {
+		runtime.log(`[${evmConfig.chainSelectorName}] Below threshold, skipping`)
+		return `${evmConfig.chainSelectorName}: no update needed`
 	}
 
-	runtime.log(`Rate deviation exceeds ${config.deviationThresholdBips} bips, submitting report`)
-
-	// 5. Generate and submit signed report to CREOracleConsumer
+	// Submit signed report
 	const reportData = encodeAbiParameters([{ type: 'uint256' }], [newRateFixed])
 	const reportRequest = prepareReportRequest(reportData)
 	const report = runtime.report(reportRequest).result()
@@ -185,13 +168,45 @@ export const onCronTrigger = (runtime: Runtime<Config>): string => {
 		})
 		.result()
 
+	const txHash = bytesToHex(writeResult.txHash || new Uint8Array(32))
+
 	if (writeResult.txStatus !== TxStatus.SUCCESS) {
-		throw new Error(`Oracle update TX failed: ${writeResult.errorMessage || writeResult.txStatus}`)
+		runtime.log(`[${evmConfig.chainSelectorName}] TX failed: ${writeResult.errorMessage || writeResult.txStatus}`)
+		return `${evmConfig.chainSelectorName}: failed`
 	}
 
-	const txHash = bytesToHex(writeResult.txHash || new Uint8Array(32))
-	runtime.log(`Oracle updated to ${newRateFixed.toString()}. TX: ${txHash}`)
-	return `Rate updated: ${fetchedRate} — tx: ${txHash}`
+	runtime.log(`[${evmConfig.chainSelectorName}] Updated to ${newRateFixed.toString()}. TX: ${txHash}`)
+	return `${evmConfig.chainSelectorName}: updated — tx: ${txHash}`
+}
+
+export const onCronTrigger = (runtime: Runtime<Config>): string => {
+	const config = runtime.config
+
+	runtime.log('Oracle update workflow triggered')
+
+	// 1. Fetch rate from issuer API with DON consensus (median)
+	const httpClient = new cre.capabilities.HTTPClient()
+	const fetchedRate = httpClient
+		.sendRequest(
+			runtime,
+			fetchIssuerRate,
+			consensusMedianAggregation(),
+		)(config)
+		.result()
+
+	runtime.log(`Fetched issuer rate: ${fetchedRate}`)
+
+	const newRateFixed = rateToFixed(fetchedRate)
+	runtime.log(`New rate (fixed-point): ${newRateFixed.toString()}`)
+
+	// 2. Update oracle on each configured chain
+	const results: string[] = []
+	for (const evmConfig of config.evms) {
+		const result = updateChain(runtime, evmConfig, newRateFixed, fetchedRate)
+		results.push(result)
+	}
+
+	return results.join(' | ')
 }
 
 export function initWorkflow(config: Config) {

@@ -6,6 +6,10 @@
     {
       "chainSelectorName": "ethereum-testnet-sepolia-base-1",
       "oracleAddress": "0x2D4bA365056cd1bF3Ba6e9b37f9025DAEcC1cE4c"
+    },
+    {
+      "chainSelectorName": "arc-testnet",
+      "oracleAddress": "0x2D4bA365056cd1bF3Ba6e9b37f9025DAEcC1cE4c"
     }
   ]
 }

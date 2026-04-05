@@ -1,0 +1,11 @@
+{
+  "schedule": "0 0 * * * *",
+  "issuerApiUrl": "https://api.real-time-reserves.verinumus.io/v1/chainlink/proof-of-reserves/TrueUSD",
+  "deviationThresholdBips": 50,
+  "evms": [
+    {
+      "chainSelectorName": "ethereum-mainnet",
+      "oracleAddress": "0xYOUR_DEPLOYED_ORACLE_ADDRESS"
+    }
+  ]
+}

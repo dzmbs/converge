@@ -1,0 +1,11 @@
+{
+  "schedule": "*/30 * * * * *",
+  "issuerApiUrl": "https://api.redstone.finance/prices/?symbol=ACRED_FUNDAMENTAL&provider=redstone&limit=1",
+  "deviationThresholdBips": 50,
+  "evms": [
+    {
+      "chainSelectorName": "ethereum-testnet-sepolia-base-1",
+      "oracleAddress": "0x2D4bA365056cd1bF3Ba6e9b37f9025DAEcC1cE4c"
+    }
+  ]
+}

@@ -184,7 +184,7 @@ contract RWAHook is BaseHook, IUnlockCallback, Ownable {
     error ActiveSettlementsPending();
     error ExitEpochNotReady();
     error ExitEpochAlreadyProcessed();
-    // InvalidPool inherited from BaseHook
+    error InvalidPool();
     error RouterNotAllowed();
 
     // ─── Modifiers ─────────────────────────────────────────────────────

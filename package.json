@@ -6,6 +6,7 @@
     "contracts:test": "pnpm --dir packages/contracts exec forge test",
     "contracts:build": "pnpm --dir packages/contracts exec forge build",
     "sim:base": "pnpm --dir packages/sim run run:base",
-    "sim:stress": "pnpm --dir packages/sim run run:stress"
+    "sim:stress": "pnpm --dir packages/sim run run:stress",
+    "cre:simulate:oracle": "cd packages/cre/workflows/oracle-update && cre workflow simulate"
   }
 }

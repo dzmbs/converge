@@ -1,5 +1,5 @@
 const prices = [
-  { symbol: "ACRED/USDC", price: "$1.0023", change: "+0.02%", up: true },
+  { symbol: "ACRED/USDC", price: "$1,094.62", change: "+0.12%", up: true },
   { symbol: "BUIDL/USDC", price: "$1.0000", change: "Stable", up: true },
   { symbol: "USDY/USDC", price: "$1.0531", change: "+0.05%", up: true },
   { symbol: "ACRED/RATE", price: "5.24%", change: "Stable", up: true },

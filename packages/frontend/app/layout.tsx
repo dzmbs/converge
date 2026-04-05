@@ -9,6 +9,9 @@ export const metadata: Metadata = {
   title: "Converge | Onchain RWA Liquidity",
   description:
     "Fixed-price RWA swaps on Uniswap v4. Oracle-priced, zero slippage, atomic settlement.",
+  icons: {
+    icon: "/icon.svg",
+  },
 };
 
 export default function RootLayout({

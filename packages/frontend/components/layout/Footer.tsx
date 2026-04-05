@@ -1,14 +1,14 @@
 import Link from "next/link";
 
 const footerLinks = [
-  { label: "Legal", href: "#" },
-  { label: "Regulatory Disclosure", href: "#" },
-  { label: "Technical Specs", href: "#" },
-  { label: "API Documentation", href: "#" },
-  { label: "SKY Partnership", href: "#" },
+  { label: "Docs", href: "#" },
+  { label: "GitHub", href: "https://github.com/dzmbs/antibes" },
+  { label: "Arc Testnet", href: "#" },
+  { label: "Circle CCTP", href: "https://www.circle.com/cross-chain-transfer-protocol" },
+  { label: "Uniswap v4", href: "https://docs.uniswap.org/contracts/v4/overview" },
 ];
 
-const mobileLinks = ["Privacy", "Compliance", "Terms"];
+const mobileLinks = ["Docs", "GitHub", "Arc Testnet"];
 
 export function Footer() {
   return (
@@ -23,7 +23,7 @@ export function Footer() {
             CONVERGE
           </span>
           <p className="text-on-surface-variant text-[11px] leading-relaxed">
-            &copy; {new Date().getFullYear()} Converge. Regulated Entity.
+            &copy; {new Date().getFullYear()} Converge. Built on Uniswap v4.
           </p>
         </div>
 
@@ -67,7 +67,7 @@ export function Footer() {
           ))}
         </div>
         <p className="text-[11px] text-on-surface-variant text-center leading-relaxed">
-          &copy; {new Date().getFullYear()} Converge. Regulated Entity.
+          &copy; {new Date().getFullYear()} Converge. Built on Uniswap v4.
         </p>
       </div>
 

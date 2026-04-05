@@ -6,10 +6,10 @@ import { CountUp } from "@/components/motion/CountUp";
 
 const ease: [number, number, number, number] = [0.25, 0.1, 0.25, 1];
 
-const assetRows = [
-  { icon: "account_balance", label: "US Treasury Bills", value: "$1,002.45", border: "border-secondary", iconColor: "text-secondary" },
-  { icon: "domain", label: "Prime Real Estate", value: "$450,230", border: "border-error", iconColor: "text-error" },
-  { icon: "currency_exchange", label: "EU Trade Finance", value: "$105.82", border: "border-bleu", iconColor: "text-bleu" },
+const featureRows = [
+  { icon: "swap_horiz", label: "Fixed-Price Swaps", value: "Zero Slippage", border: "border-secondary", iconColor: "text-secondary" },
+  { icon: "anchor", label: "Uniswap v4 Hook", value: "Oracle-Priced", border: "border-error", iconColor: "text-error" },
+  { icon: "hub", label: "RWA Liquidity", value: "Atomic", border: "border-bleu", iconColor: "text-bleu" },
 ];
 
 export function HeroSection() {
@@ -49,7 +49,7 @@ export function HeroSection() {
                 <div className="w-3 h-1 bg-[#ed2939] rounded-full" />
               </div>
               <span className="text-[11px] font-medium uppercase tracking-wider text-on-surface-variant">
-                Institutional-Grade RWA Protocol
+                Fixed-Price RWA Liquidity on Uniswap v4
               </span>
             </motion.div>
 
@@ -59,10 +59,10 @@ export function HeroSection() {
               transition={{ duration: 0.7, delay: 0.2, ease }}
               className="font-headline font-extrabold text-4xl sm:text-5xl md:text-6xl lg:text-7xl text-primary leading-[1.08] tracking-tight"
             >
-              Professional RWA{" "}
-              <span className="text-secondary">Settlement</span>
+              Where Offchain Markets{" "}
+              <span className="text-secondary">Meet Onchain</span>
               <br />
-              at Scale.
+              Liquidity.
             </motion.h1>
 
             <motion.p
@@ -71,9 +71,9 @@ export function HeroSection() {
               transition={{ duration: 0.6, delay: 0.35, ease }}
               className="text-on-surface-variant text-base md:text-xl max-w-lg leading-relaxed"
             >
-              The digital atrium for high-velocity asset clearing. Sub-second
-              finality for institutional real-world assets, backed by SKY and
-              Inifi clearing houses.
+              Converge is a Uniswap v4 hook that brings atomic, permissionless
+              onchain liquidity to RWAs. Oracle-priced fixed-rate swaps with
+              zero slippage against USDC, BTC, and ETH.
             </motion.p>
 
             <motion.div
@@ -90,9 +90,11 @@ export function HeroSection() {
                   </span>
                 </button>
               </Link>
-              <button className="w-full sm:w-auto bg-surface-container-lowest border border-outline-variant/20 text-primary font-headline font-bold rounded-lg px-10 py-3.5 md:py-4 text-base transition-all hover:border-secondary/30 hover:shadow-[0_2px_12px_rgba(0,96,170,0.08)] active:scale-[0.98]">
-                View Documentation
-              </button>
+              <a href="https://github.com/dzmbs/antibes" target="_blank" rel="noopener noreferrer">
+                <button className="w-full sm:w-auto bg-surface-container-lowest border border-outline-variant/20 text-primary font-headline font-bold rounded-lg px-10 py-3.5 md:py-4 text-base transition-all hover:border-secondary/30 hover:shadow-[0_2px_12px_rgba(0,96,170,0.08)] active:scale-[0.98]">
+                  View Documentation
+                </button>
+              </a>
             </motion.div>
           </div>
 
@@ -109,20 +111,20 @@ export function HeroSection() {
               <div className="flex justify-between items-end mb-8">
                 <div>
                   <span className="text-[11px] font-medium uppercase tracking-wider text-on-surface-variant">
-                    Total Value Locked
+                    Protocol
                   </span>
                   <div className="font-headline font-extrabold text-4xl text-primary mt-1">
-                    <CountUp value={4.28} prefix="$" suffix="B" decimals={2} />
+                    Converge
                   </div>
                 </div>
                 <div className="text-right">
                   <span className="text-[11px] font-bold text-secondary">
-                    +12.4%
+                    Arc Testnet
                   </span>
                   <div className="h-1 w-20 bg-surface-container-high rounded-full overflow-hidden mt-1">
                     <motion.div
                       initial={{ width: 0 }}
-                      animate={{ width: "75%" }}
+                      animate={{ width: "100%" }}
                       transition={{ duration: 1.2, delay: 0.8, ease }}
                       className="h-full bg-secondary rounded-full"
                     />
@@ -131,7 +133,7 @@ export function HeroSection() {
               </div>
 
               <div className="space-y-3">
-                {assetRows.map((row, i) => (
+                {featureRows.map((row, i) => (
                   <motion.div
                     key={row.label}
                     initial={{ opacity: 0, x: 20 }}

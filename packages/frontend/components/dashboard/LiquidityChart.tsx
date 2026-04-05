@@ -27,7 +27,7 @@ export function LiquidityChart() {
           <p className="text-[11px] font-medium text-on-surface-variant mt-1">
             <span className="md:hidden">V2 Asset Allocation Mesh</span>
             <span className="hidden md:inline">
-              Oracle Verification: Inifi Ledger
+              Oracle Verification: Converge
             </span>
           </p>
         </div>
@@ -37,13 +37,13 @@ export function LiquidityChart() {
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 rounded-sm bg-secondary" />
             <span className="text-[11px] font-medium uppercase tracking-wider text-on-surface-variant">
-              Sovereign Debt
+              RWA Reserve
             </span>
           </div>
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 rounded-sm bg-surface-container-high opacity-60" />
             <span className="text-[11px] font-medium uppercase tracking-wider text-on-surface-variant">
-              Liquid Credit
+              Redeem Reserve
             </span>
           </div>
         </div>

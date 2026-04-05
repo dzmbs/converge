@@ -82,7 +82,7 @@ export default function ConfirmPage() {
                     997.70
                   </span>
                   <span className="font-label text-sm font-bold text-error">
-                    tbUSD
+                    ACRED
                   </span>
                 </div>
               </div>
@@ -137,8 +137,8 @@ export default function ConfirmPage() {
 
             {/* Compliance Lock */}
             <ComplianceLock
-              title="Institutional Compliance Lock"
-              description="Compliance note: Transaction restricted to KYC wallets only. Automated AML scrubbing active for current session. Liquidity depth verified at $14.2M."
+              title="Compliance Mode"
+              description="Compliance mode active for this pool. Converge supports open access, LP-gated, and full EIP-712 swap authorization. Check pool configuration for applicable restrictions."
               icon="verified_user"
             />
 

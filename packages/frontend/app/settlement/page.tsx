@@ -29,18 +29,17 @@ export default function SettlementPage() {
 
             {/* Title */}
             <h1 className="font-headline font-extrabold text-5xl md:text-7xl text-primary leading-[1.05]">
-              Liquidity <br />
-              <span className="text-secondary">Provisioning</span>
+              Async Swap <br />
+              <span className="text-secondary">Queue</span>
             </h1>
 
             <p className="text-on-surface-variant max-w-xl leading-relaxed text-sm">
-              The requested settlement has been queued to optimize capital
-              efficiency. Our liquidity partners{" "}
-              <span className="text-primary font-medium">SKY</span> and{" "}
-              <span className="text-primary font-medium">Inifi</span> are
-              actively provisioning deep liquidity to bridge the vault&apos;s
-              yield strategies, effectively eliminating duration risk for
-              institutional participants.
+              Pool reserves were insufficient for atomic execution. This swap
+              has entered the async queue. Converge will fulfill it as reserves
+              are replenished — via yield vault recall,{" "}
+              <span className="text-primary font-medium">SKY</span> or{" "}
+              <span className="text-primary font-medium">Infinifi</span> clearing
+              house settlement, or new LP deposits.
             </p>
           </section>
 
@@ -67,10 +66,10 @@ export default function SettlementPage() {
                 status="complete"
               />
               <TimelineStep
-                title="Liquidity Bridge"
-                subtitle="Rebalancing duration exposure via SKY liquidity pools..."
+                title="Liquidity Waterfall"
+                subtitle="Attempting yield vault recall, then clearing house settlement..."
                 status="active"
-                badge="Active Inifi Node"
+                badge="Waterfall Active"
               />
               <TimelineStep
                 title="Settlement Finality"
@@ -87,13 +86,13 @@ export default function SettlementPage() {
             </span>
             <div className="space-y-2">
               <h4 className="text-[11px] font-medium uppercase tracking-wider text-on-surface">
-                Converge Institutional Safeguards
+                Converge Liquidity Waterfall
               </h4>
               <p className="text-[11px] text-on-surface-variant leading-relaxed uppercase tracking-wider">
-                Settlement delays are a function of high-yield asset lockups. By
-                leveraging the Inifi Network and SKY reserves, we maintain a
-                zero-slippage environment while assets transition from illiquid
-                yield strategies to liquid settlement tokens.
+                When pool reserves are insufficient, Converge executes a
+                four-stage waterfall: pool reserves → yield vault recall →
+                clearing house (SKY / Infinifi) → async queue. Swappers always
+                receive oracle-rate execution; only the timing differs.
               </p>
             </div>
           </div>
@@ -152,7 +151,7 @@ export default function SettlementPage() {
                   </div>
                 </div>
 
-                {/* tbUSD — muted outline accent */}
+                {/* ACRED — muted outline accent */}
                 <div className="bg-surface-container-low rounded-lg p-6 border-l-2 border-outline-variant/30 flex flex-col">
                   <span className="text-[11px] font-medium uppercase tracking-wider text-on-surface-variant mb-2">
                     Target Receipt (EST)
@@ -162,7 +161,7 @@ export default function SettlementPage() {
                       9,977.24
                     </span>
                     <span className="text-[11px] font-medium uppercase tracking-wider text-on-surface-variant">
-                      tbUSD
+                      ACRED
                     </span>
                   </div>
                 </div>
@@ -213,7 +212,7 @@ export default function SettlementPage() {
                   Real-time Insight
                 </p>
                 <p className="text-[11px] font-medium uppercase tracking-wider text-on-surface">
-                  Inifi-SKY bridge reducing duration risk by 82%.
+                  Waterfall stage 2 active — clearing house settlement in progress.
                 </p>
               </div>
             </div>

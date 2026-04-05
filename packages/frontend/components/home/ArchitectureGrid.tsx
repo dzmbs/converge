@@ -6,26 +6,26 @@ const ease: [number, number, number, number] = [0.25, 0.1, 0.25, 1];
 
 const features = [
   {
-    icon: "security",
-    title: "Isolated Custody",
+    icon: "price_check",
+    title: "Oracle-Priced Execution",
     description:
-      "Each asset class resides in a unique vault compartment, preventing cross-contamination and ensuring programmatic solvency.",
+      "Swaps execute at the oracle rate. No bonding curve, no price impact — zero slippage regardless of trade size.",
     color: "bg-sky",
     iconColor: "text-primary-container",
   },
   {
-    icon: "bolt",
-    title: "Atomic Settlement",
+    icon: "waterfall_chart",
+    title: "Liquidity Waterfall",
     description:
-      "Bypass the legacy 3-day clearing cycle. Settlements on Converge occur within 800ms of transaction validation.",
+      "When pool reserves run low, Converge automatically cascades: recall from yield vaults, then clearing house settlement, then async fulfillment queue.",
     color: "bg-secondary/10",
     iconColor: "text-secondary",
   },
   {
-    icon: "contract_edit",
-    title: "Compliance Oracle",
+    icon: "shield_lock",
+    title: "Flexible Compliance",
     description:
-      "Embedded KYC/AML rails at the protocol level. Smart contracts only execute when jurisdictional parameters are met.",
+      "Three configurable KYC modes: open access for permissionless swaps, LP-gated access, or full EIP-712 swap authorization for regulated participants.",
     color: "bg-sky",
     iconColor: "text-primary-container",
   },
@@ -44,12 +44,12 @@ export function ArchitectureGrid() {
           className="max-w-2xl mb-12 md:mb-16"
         >
           <h2 className="font-headline text-3xl md:text-4xl font-bold text-primary mb-4 leading-tight">
-            The Med-Vault Protocol
+            How Converge Works
           </h2>
           <p className="text-on-surface-variant text-lg leading-relaxed">
-            Architecture inspired by classical safety, executed with
-            quantum-resistant cryptography. Our vault system separates liquidity
-            from settlement logic.
+            A Uniswap v4 hook that replaces the bonding curve with oracle-priced
+            swap logic. Built for RWAs that have known fair values and need
+            atomic, permissionless onchain liquidity.
           </p>
         </motion.div>
 

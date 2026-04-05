@@ -1,8 +1,8 @@
 const prices = [
-  { symbol: "SKY/NAV", price: "$1.0402", change: "+0.02%", up: true },
-  { symbol: "INIFI/NAV", price: "$0.9982", change: "-0.01%", up: false },
-  { symbol: "USTB/YIELD", price: "5.24%", change: "Stable", up: true },
-  { symbol: "FR-RWA/INDEX", price: "1,245.00", change: "+1.4%", up: true },
+  { symbol: "ACRED/USDC", price: "$1.0023", change: "+0.02%", up: true },
+  { symbol: "BUIDL/USDC", price: "$1.0000", change: "Stable", up: true },
+  { symbol: "USDY/USDC", price: "$1.0531", change: "+0.05%", up: true },
+  { symbol: "ACRED/RATE", price: "5.24%", change: "Stable", up: true },
 ];
 
 export function OracleNAVCard() {

@@ -24,22 +24,22 @@ const mobileItems = [
 
 const desktopItems = [
   {
-    icon: "verified",
-    title: "SKY Clearing Partnership",
+    icon: "price_check",
+    title: "Oracle Rate Feed",
     description:
-      "Direct settlement rail integration finalized for Q4 institutional flows.",
+      "Live oracle prices feed into all swap executions, ensuring zero slippage at fair market value.",
   },
   {
-    icon: "security",
-    title: "Inifi Custody Layer",
+    icon: "waterfall_chart",
+    title: "Liquidity Waterfall",
     description:
-      "Multi-sig vault consensus reached across 12 regulated nodes.",
+      "Pool reserves, yield vault recall, clearing house settlement, and async queue form a four-stage fulfillment cascade.",
   },
   {
-    icon: "description",
-    title: "Regulatory Reporting",
+    icon: "account_balance",
+    title: "Yield Deployment",
     description:
-      "Automated SEC-compliant data streams active for all verified sub-accounts.",
+      "Idle LP capital is deployed to Aave and Morpho, generating lending yield on top of swap fee revenue.",
   },
 ];
 
@@ -90,7 +90,7 @@ export function OracleVerifications() {
       {/* Desktop */}
       <div className="hidden md:block bg-surface-container-lowest rounded-xl p-8 h-full border border-outline-variant/10">
         <h3 className="font-headline font-bold text-2xl text-primary mb-6">
-          Security Attestations
+          Protocol Verifications
         </h3>
         <div className="space-y-8">
           {desktopItems.map((item) => (

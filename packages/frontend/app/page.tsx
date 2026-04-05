@@ -33,16 +33,17 @@ export default function HomePage() {
                     Clearing Partner
                   </span>
                   <h2 className="font-headline font-bold text-4xl md:text-5xl text-on-primary leading-tight">
-                    Partnering with
+                    Clearing House
                     <br />
-                    SKY Ecosystem
+                    Integration
                   </h2>
                   <p className="text-on-primary/70 max-w-md text-base leading-relaxed">
-                    Real-time yield settlement and liquidity provisioning powered
-                    by the SKY stable asset engine.
+                    SKY and Infinifi act as clearing houses that front liquidity
+                    when pool reserves are insufficient, enabling instant
+                    settlement without waiting for the async queue.
                   </p>
                   <button className="group/btn flex items-center gap-2 text-on-primary font-bold text-sm mt-4">
-                    Explore the SKY Vault
+                    Learn about the Waterfall
                     <span className="material-symbols-outlined text-[18px] group-hover/btn:translate-x-1 transition-transform">
                       arrow_forward
                     </span>
@@ -66,15 +67,16 @@ export default function HomePage() {
                   <div className="flex items-center gap-2 mb-2">
                     <div className="w-2 h-2 bg-secondary rounded-full" />
                     <span className="text-[11px] font-medium uppercase tracking-wider text-on-surface-variant">
-                      Integration: INIFI
+                      Integration: INFINIFI
                     </span>
                   </div>
                   <h3 className="font-headline font-bold text-2xl text-primary">
-                    Decentralized Clearing House
+                    Instant Settlement Partner
                   </h3>
                   <p className="text-sm text-on-surface-variant leading-relaxed">
-                    Inifi provides the foundational credit layer, allowing for
-                    instant margin and collateralized settlement.
+                    Infinifi provides instant settlement when pool reserves are
+                    constrained, bridging the gap before the async swap queue
+                    is fulfilled.
                   </p>
                 </div>
                 <Image
@@ -118,19 +120,19 @@ export default function HomePage() {
                   Transparency by Architecture
                 </h2>
                 <p className="text-on-surface-variant text-lg leading-relaxed">
-                  Converge Institutional is founded on the principle of Radical
-                  Verifiability. Every asset is mapped to a legal deed, verified
-                  by on-chain oracles, and audited in real-time.
+                  Converge is built on open, verifiable on-chain logic. Oracle
+                  rates are public, fees are deterministic, and the liquidity
+                  waterfall is fully transparent.
                 </p>
                 <ul className="space-y-5 pt-2">
                   {[
                     {
-                      title: "Triple-Layer Audit",
-                      desc: "Daily automated proofs of reserve combined with quarterly Big Four verification.",
+                      title: "Dynamic Congestion Fees",
+                      desc: "Fees adjust automatically based on reserve health — low when reserves are deep, higher when constrained to incentivize rebalancing.",
                     },
                     {
-                      title: "Direct Redemptions",
-                      desc: "Exit your positions directly to fiat via our clearing partners with no lock-up periods.",
+                      title: "Yield Deployment",
+                      desc: "Idle LP capital is deployed to Aave and Morpho, generating additional yield for liquidity providers on top of swap fees.",
                     },
                   ].map((item, i) => (
                     <motion.li

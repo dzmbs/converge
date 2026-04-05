@@ -1,13 +1,8 @@
 const fees = [
   {
-    label: "Protocol Service Fee",
-    sublabel: "0.15%",
-    value: "1.50 USDC",
-  },
-  {
-    label: "LP Liquidity Provision Fee",
-    sublabel: "0.08%",
-    value: "0.80 USDC",
+    label: "Congestion Fee",
+    sublabel: "Dynamic — based on reserve health",
+    value: "2.30 USDC",
   },
   {
     label: "Execution Fee",
@@ -15,9 +10,9 @@ const fees = [
     value: "0.05 USDC",
   },
   {
-    label: "Slippage Tolerance",
-    sublabel: "Institutional",
-    value: "0.05%",
+    label: "Slippage",
+    sublabel: "Oracle-priced",
+    value: "0.00%",
   },
 ];
 
@@ -64,7 +59,7 @@ export function CostAnalysis() {
             Total Execution Fees
           </span>
           <p className="text-[11px] font-medium uppercase tracking-wider text-on-surface-variant">
-            Slippage + Fees Combined
+            Dynamic Congestion Fee + Fixed
           </p>
         </div>
         <div className="text-right space-y-0.5">
@@ -72,7 +67,7 @@ export function CostAnalysis() {
             2.35 USDC
           </span>
           <span className="text-[11px] font-medium text-on-surface-variant block">
-            23.0 bps
+            23.5 bps
           </span>
         </div>
       </div>

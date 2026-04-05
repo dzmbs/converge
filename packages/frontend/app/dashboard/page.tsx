@@ -24,7 +24,7 @@ export default function DashboardPage() {
               <div className="hidden md:flex items-center gap-3 mb-3">
                 <span className="h-px w-12 bg-secondary" />
                 <span className="text-[11px] font-medium uppercase tracking-wider text-on-surface-variant">
-                  Audit Protocol v8.4.1 — SKY Settlement
+                  Converge Protocol — Live Metrics
                 </span>
               </div>
 
@@ -70,7 +70,7 @@ export default function DashboardPage() {
                 <div className="flex justify-between text-[11px] font-medium mb-2 text-on-surface-variant">
                   <span className="flex items-center gap-1">
                     <span className="w-1.5 h-1.5 rounded-full bg-secondary" />
-                    SKY Anchor
+                    Pool Reserves
                   </span>
                   <span className="text-secondary">+4.12% Delta</span>
                 </div>
@@ -84,14 +84,14 @@ export default function DashboardPage() {
             <div className="hidden md:flex bg-surface-container-lowest rounded-lg border border-outline-variant/10 p-8 flex-col justify-between">
               <div>
                 <p className="text-[11px] font-medium uppercase tracking-wider text-on-surface-variant mb-1">
-                  Duration Risk
+                  Oracle Rate
                 </p>
                 <div className="flex items-baseline gap-2">
                   <h2 className="font-headline font-bold text-5xl text-on-surface">
-                    1.8y
+                    $1.0023
                   </h2>
                   <span className="text-[11px] font-medium uppercase tracking-wider text-secondary">
-                    Optimal
+                    Live
                   </span>
                 </div>
               </div>
@@ -111,14 +111,14 @@ export default function DashboardPage() {
               badge="PENDING"
             />
 
-            {/* NAV Price */}
+            {/* Pool Liquidity */}
             <div className="bg-surface-container-lowest rounded-lg border border-outline-variant/10 p-6 md:p-8 flex flex-col justify-between">
               <div>
                 <span className="text-[11px] font-medium uppercase tracking-wider text-on-surface-variant block mb-1">
-                  NAV Price
+                  Pool Liquidity
                 </span>
                 <span className="font-headline font-bold text-2xl md:text-4xl text-on-surface">
-                  $1.0023
+                  $2.4M
                 </span>
               </div>
               <div className="hidden md:flex items-center gap-2 mt-8">
@@ -126,20 +126,20 @@ export default function DashboardPage() {
                   trending_up
                 </span>
                 <span className="text-[11px] font-medium uppercase tracking-wider text-secondary">
-                  Inifi-Feed Realtime
+                  ACRED/USDC Pair
                 </span>
               </div>
             </div>
 
-            {/* Blended Yield */}
+            {/* Fee Rate */}
             <div className="bg-surface-container-lowest rounded-lg border border-outline-variant/10 p-6 md:p-8 flex flex-col justify-between">
               <div>
                 <span className="text-[11px] font-medium uppercase tracking-wider text-on-surface-variant block mb-1">
-                  <span className="md:hidden">Yield APY</span>
-                  <span className="hidden md:inline">Blended Yield</span>
+                  <span className="md:hidden">Fee Rate</span>
+                  <span className="hidden md:inline">Fee Rate</span>
                 </span>
                 <span className="font-headline font-bold text-2xl md:text-4xl text-secondary">
-                  4.7<span className="hidden md:inline">2</span>%
+                  23<span className="hidden md:inline"> bps</span>
                 </span>
               </div>
               <div className="hidden md:flex items-end h-6 gap-0.5 mt-8">
@@ -151,19 +151,19 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            {/* Clearing Queue — desktop only */}
+            {/* Async Queue — desktop only */}
             <div className="hidden md:flex bg-surface-container-lowest rounded-lg border border-outline-variant/10 p-8 flex-col justify-between">
               <div>
                 <p className="text-[11px] font-medium uppercase tracking-wider text-on-surface-variant mb-1">
-                  Clearing Queue
+                  Async Queue
                 </p>
                 <h2 className="font-headline font-bold text-4xl text-on-surface">
-                  0.02s
+                  0
                 </h2>
               </div>
               <div className="flex gap-2 mt-8">
                 <span className="text-[11px] font-medium uppercase tracking-wider text-on-surface-variant/50">
-                  Partner: SKY Network
+                  Pending Swaps
                 </span>
               </div>
             </div>

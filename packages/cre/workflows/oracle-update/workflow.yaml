@@ -1,0 +1,21 @@
+# ==========================================================================
+# CRE WORKFLOW SETTINGS — Oracle Update
+# ==========================================================================
+# Fetches RWA NAV from issuer API, compares with on-chain rate,
+# and submits a CRE report to update CREOracleConsumer if deviation exceeds threshold.
+
+staging-settings:
+  user-workflow:
+    workflow-name: "converge-oracle-update-staging"
+  workflow-artifacts:
+    workflow-path: "./main.ts"
+    config-path: "./config.staging.json"
+    secrets-path: ""
+
+production-settings:
+  user-workflow:
+    workflow-name: "converge-oracle-update"
+  workflow-artifacts:
+    workflow-path: "./main.ts"
+    config-path: "./config.production.json"
+    secrets-path: ""

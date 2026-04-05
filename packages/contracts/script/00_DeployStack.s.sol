@@ -9,11 +9,11 @@ import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {HookMiner} from "@uniswap/v4-periphery/src/utils/HookMiner.sol";
 
-import {IOUToken} from "../src/IOUToken.sol";
-import {RWAHook} from "../src/RWAHook.sol";
+import {ConvergeHook} from "../src/ConvergeHook.sol";
 import {IKYCRegistry} from "../src/interfaces/IKYCRegistry.sol";
 import {IRWAOracle} from "../src/interfaces/IRWAOracle.sol";
 import {IKYCPolicy} from "../src/interfaces/IKYCPolicy.sol";
+import {IIssuerAdapter} from "../src/interfaces/IIssuerAdapter.sol";
 import {IYieldVault} from "../src/interfaces/IYieldVault.sol";
 import {IRebalanceStrategy} from "../src/interfaces/IRebalanceStrategy.sol";
 import {RegistryKYCPolicy} from "../src/policies/RegistryKYCPolicy.sol";
@@ -21,6 +21,7 @@ import {ThresholdRebalanceStrategy} from "../src/policies/ThresholdRebalanceStra
 import {MintableToken} from "../src/mocks/MintableToken.sol";
 import {DeployableKYCRegistry} from "../src/mocks/DeployableKYCRegistry.sol";
 import {DeployableRWAOracle} from "../src/mocks/DeployableRWAOracle.sol";
+import {DeployableIssuerAdapter} from "../src/mocks/DeployableIssuerAdapter.sol";
 import {DeployableYieldVault} from "../src/mocks/DeployableYieldVault.sol";
 
 import {BaseScript} from "./base/BaseScript.s.sol";
@@ -53,6 +54,7 @@ contract DeployStackScript is BaseScript {
         address oracleAddr;
         address yieldVaultAddr;
         address rebalanceStrategyAddr;
+        address issuerAdapterAddr;
         address complianceSigner;
         RegistryKYCPolicy.Mode mode;
     }
@@ -64,8 +66,12 @@ contract DeployStackScript is BaseScript {
         address oracleAddr;
         address yieldVaultAddr;
         address rebalanceStrategyAddr;
+        address issuerAdapterAddr;
         RegistryKYCPolicy kycPolicy;
         bool kycRegistryWasDeployed;
+        bool rwaTokenWasDeployed;
+        bool redeemAssetWasDeployed;
+        bool issuerAdapterWasDeployed;
     }
 
     function run() external {
@@ -76,7 +82,7 @@ contract DeployStackScript is BaseScript {
         deployArtifacts();
         DeployedModules memory deployed = _deployModules(config, deployer);
 
-        RWAHook.FeeConfig memory feeConfig = RWAHook.FeeConfig({
+        ConvergeHook.FeeConfig memory feeConfig = ConvergeHook.FeeConfig({
             minFeeBips: config.minFeeBips,
             maxFeeBips: config.maxFeeBips,
             lowThreshold: config.lowThreshold,
@@ -104,11 +110,11 @@ contract DeployStackScript is BaseScript {
         );
 
         (address expectedHookAddress, bytes32 salt) =
-            HookMiner.find(CREATE2_FACTORY, flags, type(RWAHook).creationCode, constructorArgs);
+            HookMiner.find(CREATE2_FACTORY, flags, type(ConvergeHook).creationCode, constructorArgs);
 
-        RWAHook hook;
+        ConvergeHook hook;
         if (expectedHookAddress.code.length == 0) {
-            hook = new RWAHook{salt: salt}(
+            hook = new ConvergeHook{salt: salt}(
                 IPoolManager(address(poolManager)),
                 deployed.rwaToken,
                 deployed.redeemAsset,
@@ -121,19 +127,14 @@ contract DeployStackScript is BaseScript {
             );
             require(address(hook) == expectedHookAddress, "hook address mismatch");
         } else {
-            hook = RWAHook(expectedHookAddress);
+            hook = ConvergeHook(expectedHookAddress);
         }
-
-        IOUToken iouToken = new IOUToken(
-            vm.envOr("IOU_NAME", string("Converge Redemption IOU")),
-            vm.envOr("IOU_SYMBOL", string("aIOU")),
-            address(hook),
-            config.redeemDecimals
-        );
 
         hook.setYieldVault(IYieldVault(deployed.yieldVaultAddr));
         hook.setRebalanceStrategy(IRebalanceStrategy(deployed.rebalanceStrategyAddr));
-        hook.setIOUToken(iouToken);
+        if (deployed.issuerAdapterAddr != address(0)) {
+            hook.setIssuerAdapter(IIssuerAdapter(deployed.issuerAdapterAddr));
+        }
 
         (Currency currency0, Currency currency1) = _sortCurrencies(deployed.rwaToken, deployed.redeemAsset);
         PoolKey memory poolKey = PoolKey({
@@ -172,7 +173,8 @@ contract DeployStackScript is BaseScript {
             kycPolicy: address(deployed.kycPolicy),
             yieldVault: deployed.yieldVaultAddr,
             rebalanceStrategy: deployed.rebalanceStrategyAddr,
-            iouToken: address(iouToken),
+            issuerAdapter: deployed.issuerAdapterAddr,
+            iouToken: address(0),
             hook: address(hook),
             poolId: PoolId.unwrap(poolKey.toId())
         });
@@ -206,6 +208,7 @@ contract DeployStackScript is BaseScript {
         config.oracleAddr = vm.envOr("ORACLE", address(0));
         config.yieldVaultAddr = vm.envOr("YIELD_VAULT", address(0));
         config.rebalanceStrategyAddr = vm.envOr("REBALANCE_STRATEGY", address(0));
+        config.issuerAdapterAddr = vm.envOr("ISSUER_ADAPTER", address(0));
         config.complianceSigner = vm.envOr("COMPLIANCE_SIGNER", deployer);
         config.mode = RegistryKYCPolicy.Mode(
             uint8(vm.envOr("KYC_MODE", uint256(uint8(RegistryKYCPolicy.Mode.NONE))))
@@ -219,8 +222,10 @@ contract DeployStackScript is BaseScript {
         deployed.oracleAddr = config.oracleAddr;
         deployed.yieldVaultAddr = config.yieldVaultAddr;
         deployed.rebalanceStrategyAddr = config.rebalanceStrategyAddr;
+        deployed.issuerAdapterAddr = config.issuerAdapterAddr;
 
         if (deployed.rwaToken == address(0)) {
+            deployed.rwaTokenWasDeployed = true;
             deployed.rwaToken = address(
                 new MintableToken(
                     vm.envOr("RWA_NAME", string("Converge Test RWA")),
@@ -233,6 +238,7 @@ contract DeployStackScript is BaseScript {
         }
 
         if (deployed.redeemAsset == address(0)) {
+            deployed.redeemAssetWasDeployed = true;
             deployed.redeemAsset = address(
                 new MintableToken(
                     vm.envOr("REDEEM_NAME", string("Converge Test USD")),
@@ -267,6 +273,20 @@ contract DeployStackScript is BaseScript {
                     deployer
                 )
             );
+        }
+
+        if (deployed.issuerAdapterAddr == address(0) && block.chainid == 31337) {
+            deployed.issuerAdapterWasDeployed = true;
+            deployed.issuerAdapterAddr = address(new DeployableIssuerAdapter(deployer));
+        }
+
+        if (deployed.issuerAdapterWasDeployed) {
+            if (deployed.rwaTokenWasDeployed) {
+                MintableToken(deployed.rwaToken).transferOwnership(deployed.issuerAdapterAddr);
+            }
+            if (deployed.redeemAssetWasDeployed) {
+                MintableToken(deployed.redeemAsset).transferOwnership(deployed.issuerAdapterAddr);
+            }
         }
 
         deployed.kycPolicy = new RegistryKYCPolicy(IKYCRegistry(deployed.kycRegistryAddr), config.mode, deployer);

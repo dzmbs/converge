@@ -21,9 +21,8 @@ import {IClearingHouse} from "./interfaces/IClearingHouse.sol";
 import {IYieldVault} from "./interfaces/IYieldVault.sol";
 import {IRebalanceStrategy} from "./interfaces/IRebalanceStrategy.sol";
 import {IIssuerAdapter} from "./interfaces/IIssuerAdapter.sol";
-import {IOUToken} from "./IOUToken.sol";
 
-/// @title RWAHook
+/// @title ConvergeHook
 /// @notice Uniswap v4 hook implementing a fixed-price AMM for Real World Assets.
 ///
 /// Token flow (AsyncSwap / Custom Curve pattern per Uniswap docs):
@@ -38,8 +37,15 @@ import {IOUToken} from "./IOUToken.sol";
 ///
 /// The hook implements IUnlockCallback so it can call poolManager.unlock() to convert
 /// ERC6909 claims into real ERC20 tokens when needed (yield deployment, clearing house, etc).
-contract RWAHook is BaseHook, IUnlockCallback, Ownable {
+contract ConvergeHook is BaseHook, IUnlockCallback, Ownable {
     using PoolIdLibrary for PoolKey;
+
+    enum AsyncSwapStatus {
+        None,
+        Pending,
+        Claimable,
+        Claimed
+    }
 
     struct FeeConfig {
         uint16 minFeeBips;
@@ -50,25 +56,35 @@ contract RWAHook is BaseHook, IUnlockCallback, Ownable {
 
     struct ActiveSettlement {
         bytes32 requestId;
-        bool isMint;
         uint256 inputAmount;
         uint256 expectedOutputAmount;
         uint256 requestRate;
-        uint256 initiatedAt;
+        uint40 initiatedAt;
+        bool isMint;
     }
 
     struct ExitEpoch {
         uint256 totalShares;
         uint256 rwaReserved;
         uint256 redeemReserved;
-        uint256 pendingSettlementCount;
+        uint64 pendingSettlementCount;
         bool processed;
     }
 
-    uint16 public constant MAX_FEE_BIPS = 10_000;
-    uint16 public constant PENDING_SETTLEMENT_CREDIT_BIPS = 5_000;
-    uint256 public constant MINIMUM_SHARES = 1000;
-    uint256 public constant MAX_ORACLE_STALENESS = 1 days;
+    struct AsyncSwapRequest {
+        address recipient;
+        bool swapRwaForRedeem;
+        AsyncSwapStatus status;
+        uint256 pendingAmountIn;
+        uint256 claimableAmountOut;
+        uint256 minAsyncAmountOut;
+        bytes32 settlementRequestId;
+    }
+
+    uint16 internal constant MAX_FEE_BIPS = 10_000;
+    uint16 internal constant PENDING_SETTLEMENT_CREDIT_BIPS = 5_000;
+    uint256 internal constant MINIMUM_SHARES = 1000;
+    uint256 internal constant MAX_ORACLE_STALENESS = 1 days;
 
     // ─── Immutables ────────────────────────────────────────────────────
     // poolManager is inherited from BaseHook
@@ -87,8 +103,7 @@ contract RWAHook is BaseHook, IUnlockCallback, Ownable {
     IYieldVault public yieldVault;
     IRebalanceStrategy public rebalanceStrategy;
     IIssuerAdapter public issuerAdapter;
-    IOUToken public iouToken;
-    address public pendingOwner;
+    address private pendingOwner;
     FeeConfig public feeConfig;
 
     // LP accounting
@@ -98,20 +113,17 @@ contract RWAHook is BaseHook, IUnlockCallback, Ownable {
     // Reserves: ERC20 tokens held directly in hook's wallet (from LP deposits)
     uint256 public rwaReserve;
     uint256 public redeemReserve;
-    uint256 public rwaRedemptionReserve;
 
     // Claims: ERC6909 tokens held in PM (from swap inputs via mint())
     uint256 public claimsRwa;
     uint256 public claimsRedeem;
 
-    // Yield & IOU tracking
+    // Yield tracking
     uint256 public deployedToYield;
-    uint256 public iouReserve;
-    uint256 public totalPendingRedemptions;
 
     // Issuer settlement tracking
-    mapping(bytes32 => ActiveSettlement) public activeSettlements;
-    bytes32[] public activeSettlementIds;
+    mapping(bytes32 => ActiveSettlement) private activeSettlements;
+    bytes32[] private activeSettlementIds;
     mapping(bytes32 => uint256) private _activeSettlementIndexPlusOne;
     uint256 public pendingRwaSentToIssuer;
     uint256 public pendingRedeemSentToIssuer;
@@ -119,12 +131,21 @@ contract RWAHook is BaseHook, IUnlockCallback, Ownable {
     uint256 public pendingRedeemExpectedFromIssuer;
 
     // Async LP exit tracking
-    uint256 public currentExitEpoch;
-    mapping(uint256 => ExitEpoch) public exitEpochs;
-    mapping(uint256 => mapping(address => uint256)) public exitEpochShares;
-    mapping(uint256 => mapping(bytes32 => uint256)) public exitEpochSettlementShares;
+    uint256 private currentExitEpoch;
+    mapping(uint256 => ExitEpoch) private exitEpochs;
+    mapping(uint256 => mapping(address => uint256)) private exitEpochShares;
+    mapping(uint256 => mapping(bytes32 => uint256)) private exitEpochSettlementShares;
     mapping(bytes32 => uint256[]) private _settlementEpochIds;
-    mapping(bytes32 => uint256) public allocatedSettlementShares;
+    mapping(bytes32 => uint256) private allocatedSettlementShares;
+    uint256 private totalExitEpochRwaReserved;
+    uint256 private totalExitEpochRedeemReserved;
+
+    // Async user swap requests
+    uint256 public nextAsyncSwapRequestId = 1;
+    uint256 public pendingAsyncSwapCount;
+    uint256 public claimableAsyncRwa;
+    uint256 public claimableAsyncRedeem;
+    mapping(uint256 => AsyncSwapRequest) private asyncSwapRequests;
 
     // Reentrancy lock
     uint256 private _locked = 1;
@@ -135,14 +156,10 @@ contract RWAHook is BaseHook, IUnlockCallback, Ownable {
     event YieldDeployed(uint256 amount);
     event YieldRecalled(uint256 amount);
     event ClearingHouseSettlement(uint256 rwaAmount, uint256 redeemAmount, address indexed recipient);
-    event IOUMinted(address indexed recipient, uint256 amount);
-    event IOUResolved(uint256 amount);
-    event IOURedeemed(address indexed holder, uint256 iouBurned, uint256 redeemReceived);
     event ClaimsWithdrawn(address indexed token, uint256 amount);
     event OwnershipTransferProposed(address indexed currentOwner, address indexed pendingOwner);
     event ClearingHouseUpdated(address indexed oldCH, address indexed newCH);
     event YieldVaultUpdated(address indexed oldVault, address indexed newVault);
-    event IOUTokenUpdated(address indexed token);
     event KYCPolicyUpdated(address indexed policy);
     event FeeConfigUpdated(uint16 minFeeBips, uint16 maxFeeBips, uint256 lowThreshold, uint256 highThreshold);
     event OracleUpdated(address indexed oldOracle, address indexed newOracle);
@@ -150,13 +167,22 @@ contract RWAHook is BaseHook, IUnlockCallback, Ownable {
     event IssuerAdapterUpdated(address indexed oldAdapter, address indexed newAdapter);
     event ClaimsSynced(address indexed token, uint256 amount);
     event Rebalanced(uint256 targetRwaReserve, uint256 targetRedeemReserve);
-    event RedemptionCollateralTransferred(address indexed recipient, uint256 amount);
     event IssuerRedemptionInitiated(bytes32 indexed requestId, uint256 rwaAmount, uint256 expectedRedeemOut);
     event IssuerMintInitiated(bytes32 indexed requestId, uint256 redeemAmount, uint256 expectedRwaOut);
     event IssuerSettlementFinalized(bytes32 indexed requestId, bool isMint, uint256 outputAmount);
     event WithdrawRequested(address indexed lp, uint256 indexed epochId, uint256 shares);
     event ExitEpochProcessed(uint256 indexed epochId, uint256 sharesBurned, uint256 rwaReserved, uint256 redeemReserved);
     event ExitClaimed(address indexed lp, uint256 indexed epochId, uint256 rwaOut, uint256 redeemOut);
+    event AsyncSwapRequested(
+        uint256 indexed requestId,
+        address indexed recipient,
+        bool swapRwaForRedeem,
+        uint256 instantAmountOut,
+        uint256 pendingAmountIn,
+        bytes32 settlementRequestId
+    );
+    event AsyncSwapFinalized(uint256 indexed requestId, bytes32 indexed settlementRequestId, uint256 outputAmount);
+    event AsyncSwapClaimed(uint256 indexed requestId, address indexed recipient, uint256 outputAmount);
 
     // ─── Errors ────────────────────────────────────────────────────────
     error PoolAlreadyInitialized();
@@ -184,6 +210,10 @@ contract RWAHook is BaseHook, IUnlockCallback, Ownable {
     error ActiveSettlementsPending();
     error ExitEpochNotReady();
     error ExitEpochAlreadyProcessed();
+    error AsyncSwapNotFound();
+    error AsyncSwapNotClaimable();
+    error AsyncSwapStillPending();
+    error AsyncSwapAlreadyClaimed();
     // InvalidPool inherited from BaseHook
     error RouterNotAllowed();
 
@@ -361,6 +391,8 @@ contract RWAHook is BaseHook, IUnlockCallback, Ownable {
         rwaReserve -= rwaReserved;
         redeemReserve -= redeemReserved;
         totalShares -= epoch.totalShares;
+        totalExitEpochRwaReserved += rwaReserved;
+        totalExitEpochRedeemReserved += redeemReserved;
 
         for (uint256 i = 0; i < activeSettlementIds.length; i++) {
             bytes32 requestId = activeSettlementIds[i];
@@ -398,6 +430,8 @@ contract RWAHook is BaseHook, IUnlockCallback, Ownable {
         epoch.rwaReserved -= rwaOut;
         epoch.redeemReserved -= redeemOut;
         epoch.totalShares -= userShares;
+        totalExitEpochRwaReserved -= rwaOut;
+        totalExitEpochRedeemReserved -= redeemOut;
 
         if (rwaOut > 0) _safeTransfer(rwaToken, msg.sender, rwaOut);
         if (redeemOut > 0) _safeTransfer(redeemAsset, msg.sender, redeemOut);
@@ -405,58 +439,136 @@ contract RWAHook is BaseHook, IUnlockCallback, Ownable {
         emit ExitClaimed(msg.sender, epochId, rwaOut, redeemOut);
     }
 
-    function requestRedemption(uint256 rwaAmount) external onlyInitialized nonReentrant returns (uint256 iouAmount) {
-        if (rwaAmount == 0) revert ZeroAmount();
-        if (address(iouToken) == address(0)) revert HookNotImplemented();
+    /// @notice Optional async swap path for users who explicitly accept delayed settlement.
+    ///         This path is separate from the Uniswap router flow and is meant for direct UI use.
+    function requestAsyncSwap(
+        bool swapRwaForRedeem,
+        uint256 amountIn,
+        uint256 minInstantAmountOut,
+        uint256 minAsyncAmountOut,
+        address recipient,
+        bool allowPartialFill,
+        uint256 deadline,
+        bytes calldata authorization
+    )
+        external
+        onlyInitialized
+        nonReentrant
+        returns (uint256 requestId, uint256 instantAmountOut, uint256 pendingAmountOutExpected)
+    {
+        if (block.timestamp > deadline) revert DeadlineExpired();
+        if (recipient == address(0)) revert ZeroAddress();
+        if (amountIn == 0) revert ZeroAmount();
+        if (address(issuerAdapter) == address(0)) revert HookNotImplemented();
 
-        if (address(kycPolicy) != address(0) && !kycPolicy.validateRedemption(msg.sender)) {
-            revert KYCRequired();
+        address tokenIn = swapRwaForRedeem ? rwaToken : redeemAsset;
+        address tokenOut = swapRwaForRedeem ? redeemAsset : rwaToken;
+
+        if (address(kycPolicy) != address(0)) {
+            IKYCPolicy.DirectSwapValidationContext memory context = IKYCPolicy.DirectSwapValidationContext({
+                requester: msg.sender,
+                recipient: recipient,
+                hook: address(this),
+                tokenIn: tokenIn,
+                tokenOut: tokenOut,
+                amountIn: amountIn,
+                swapRwaForRedeem: swapRwaForRedeem
+            });
+            if (!kycPolicy.validateDirectSwap(context, authorization)) revert KYCRequired();
         }
 
-        _safeTransferFrom(rwaToken, msg.sender, address(this), rwaAmount);
-        rwaRedemptionReserve += rwaAmount;
+        _safeTransferFrom(tokenIn, msg.sender, address(this), amountIn);
 
-        iouAmount = _convertWithRate(rwaAmount, _getValidRate(), true);
-        iouToken.mint(msg.sender, iouAmount);
-        totalPendingRedemptions += iouAmount;
+        uint256 rate = _getValidRate();
+        uint256 instantAmountIn = allowPartialFill ? _maxImmediateAsyncInput(rate, swapRwaForRedeem) : 0;
+        if (instantAmountIn > amountIn) instantAmountIn = amountIn;
 
-        emit IOUMinted(msg.sender, iouAmount);
+        if (instantAmountIn > 0) {
+            instantAmountOut = _executeImmediateAsyncSwap(
+                swapRwaForRedeem, instantAmountIn, rate, recipient
+            );
+        }
+
+        if (instantAmountOut < minInstantAmountOut) revert SlippageExceeded();
+
+        uint256 pendingAmountIn = amountIn - instantAmountIn;
+        if (pendingAmountIn == 0) {
+            return (0, instantAmountOut, 0);
+        }
+
+        requestId = nextAsyncSwapRequestId++;
+        pendingAmountOutExpected = _initiateAsyncSwapSettlement(
+            requestId, recipient, swapRwaForRedeem, pendingAmountIn, minAsyncAmountOut, rate
+        );
+
+        emit AsyncSwapRequested(
+            requestId,
+            recipient,
+            swapRwaForRedeem,
+            instantAmountOut,
+            pendingAmountIn,
+            asyncSwapRequests[requestId].settlementRequestId
+        );
     }
 
-    function resolveIOUs(uint256 amount) external onlyOwner {
-        _safeTransferFrom(redeemAsset, msg.sender, address(this), amount);
-        iouReserve += amount;
-        if (amount > totalPendingRedemptions) {
-            totalPendingRedemptions = 0;
+    function finalizeAsyncSwap(uint256 requestId)
+        external
+        onlyInitialized
+        nonReentrant
+        returns (uint256 claimableAmountOut)
+    {
+        AsyncSwapRequest storage request = asyncSwapRequests[requestId];
+        if (request.status == AsyncSwapStatus.None) revert AsyncSwapNotFound();
+        if (request.status != AsyncSwapStatus.Pending) revert AsyncSwapNotClaimable();
+
+        (bool settled, uint256 outputAmount,) = issuerAdapter.settlementResult(request.settlementRequestId);
+        if (!settled) revert AsyncSwapStillPending();
+        if (outputAmount < request.minAsyncAmountOut) revert SlippageExceeded();
+
+        if (request.swapRwaForRedeem) {
+            if (IERC20Minimal(redeemAsset).balanceOf(address(this)) < _accountedRedeemBalance() + outputAmount) {
+                revert SettlementBalanceMismatch();
+            }
+            claimableAsyncRedeem += outputAmount;
         } else {
-            totalPendingRedemptions -= amount;
+            if (IERC20Minimal(rwaToken).balanceOf(address(this)) < _accountedRwaBalance() + outputAmount) {
+                revert SettlementBalanceMismatch();
+            }
+            claimableAsyncRwa += outputAmount;
         }
-        emit IOUResolved(amount);
+
+        request.claimableAmountOut = outputAmount;
+        request.status = AsyncSwapStatus.Claimable;
+        pendingAsyncSwapCount -= 1;
+
+        emit AsyncSwapFinalized(requestId, request.settlementRequestId, outputAmount);
+        return outputAmount;
     }
 
-    function redeemIOU(uint256 iouAmount) external nonReentrant {
-        if (iouAmount == 0) revert ZeroAmount();
-        if (iouAmount > iouReserve) revert InsufficientLiquidity();
+    function claimAsyncSwap(uint256 requestId)
+        external
+        onlyInitialized
+        nonReentrant
+        returns (uint256 outputAmount)
+    {
+        AsyncSwapRequest storage request = asyncSwapRequests[requestId];
+        if (request.status == AsyncSwapStatus.None) revert AsyncSwapNotFound();
+        if (request.status == AsyncSwapStatus.Pending) revert AsyncSwapStillPending();
+        if (request.status == AsyncSwapStatus.Claimed) revert AsyncSwapAlreadyClaimed();
 
-        iouToken.burn(msg.sender, iouAmount);
-        iouReserve -= iouAmount;
-        _safeTransfer(redeemAsset, msg.sender, iouAmount);
+        outputAmount = request.claimableAmountOut;
+        request.claimableAmountOut = 0;
+        request.status = AsyncSwapStatus.Claimed;
 
-        emit IOURedeemed(msg.sender, iouAmount, iouAmount);
-    }
-
-    function airdropAndBurnIOUs(address[] calldata holders) external onlyOwner nonReentrant {
-        for (uint256 i = 0; i < holders.length; i++) {
-            uint256 bal = iouToken.balanceOf(holders[i]);
-            if (bal == 0) continue;
-            if (bal > iouReserve) bal = iouReserve;
-
-            iouToken.burn(holders[i], bal);
-            iouReserve -= bal;
-            _safeTransfer(redeemAsset, holders[i], bal);
-
-            emit IOURedeemed(holders[i], bal, bal);
+        if (request.swapRwaForRedeem) {
+            claimableAsyncRedeem -= outputAmount;
+            _safeTransfer(redeemAsset, request.recipient, outputAmount);
+        } else {
+            claimableAsyncRwa -= outputAmount;
+            _safeTransfer(rwaToken, request.recipient, outputAmount);
         }
+
+        emit AsyncSwapClaimed(requestId, request.recipient, outputAmount);
     }
 
     function deployToYield(uint256 amount) external onlyOwner onlyInitialized {
@@ -484,11 +596,6 @@ contract RWAHook is BaseHook, IUnlockCallback, Ownable {
         yieldVault = _vault;
     }
 
-    function setIOUToken(IOUToken _iouToken) external onlyOwner {
-        iouToken = _iouToken;
-        emit IOUTokenUpdated(address(_iouToken));
-    }
-
     function setKYCPolicy(IKYCPolicy _policy) external onlyOwner {
         kycPolicy = _policy;
         emit KYCPolicyUpdated(address(_policy));
@@ -500,6 +607,7 @@ contract RWAHook is BaseHook, IUnlockCallback, Ownable {
     }
 
     function setIssuerAdapter(IIssuerAdapter _adapter) external onlyOwner {
+        if (activeSettlementIds.length > 0 || pendingAsyncSwapCount > 0) revert ActiveSettlementsPending();
         emit IssuerAdapterUpdated(address(issuerAdapter), address(_adapter));
         issuerAdapter = _adapter;
     }
@@ -526,16 +634,6 @@ contract RWAHook is BaseHook, IUnlockCallback, Ownable {
         if (msg.sender != pendingOwner) revert NotPendingOwner();
         _transferOwnership(msg.sender);
         pendingOwner = address(0);
-    }
-
-    /// @notice Transfers locked RWA redemption collateral to an external settlement recipient.
-    ///         This is the hook-side bridge to offchain / issuer settlement rails.
-    function transferRedemptionCollateral(address recipient, uint256 amount) external onlyOwner nonReentrant {
-        if (recipient == address(0)) revert ZeroAddress();
-        if (amount > rwaRedemptionReserve) revert InsufficientLiquidity();
-        rwaRedemptionReserve -= amount;
-        _safeTransfer(rwaToken, recipient, amount);
-        emit RedemptionCollateralTransferred(recipient, amount);
     }
 
     /// @notice Finalizes up to `maxCount` issuer settlements that have already completed.
@@ -638,40 +736,39 @@ contract RWAHook is BaseHook, IUnlockCallback, Ownable {
     //                     EXTERNAL VIEW FUNCTIONS
     // ═══════════════════════════════════════════════════════════════════
 
-    function totalValue() external view returns (uint256) { return _totalValue(); }
-
-    function activeSettlementCount() external view returns (uint256) {
-        return activeSettlementIds.length;
+    function activeSettlementIdAt(uint256 index) external view returns (bytes32) {
+        return activeSettlementIds[index];
     }
 
-    function getAmountOut(uint256 amountIn, bool swapRwaForRedeem) external view returns (uint256) {
-        uint256 fee = _calculateFee(amountIn, swapRwaForRedeem);
-        return _convertWithRate(amountIn - fee, _getValidRate(), swapRwaForRedeem);
+    function getActiveSettlement(bytes32 requestId) external view returns (bool isMint, uint256 expectedOutputAmount) {
+        ActiveSettlement storage settlement = activeSettlements[requestId];
+        return (settlement.isMint, settlement.expectedOutputAmount);
     }
 
-    function getCurrentFee(bool swapRwaForRedeem) external view returns (uint256) {
-        uint256 rate = _getValidRate();
-        return swapRwaForRedeem ? _congestionFee(_effectiveRedeemReserve(rate)) : _congestionFee(_effectiveRwaReserve());
+    function getExitEpochStatus(uint256 epochId) external view returns (uint64 pendingSettlementCount, bool processed) {
+        ExitEpoch storage epoch = exitEpochs[epochId];
+        return (epoch.pendingSettlementCount, epoch.processed);
     }
 
-    function shareValue(address lp) external view returns (uint256) {
-        if (totalShares == 0) return 0;
-        return (_totalValue() * shares[lp]) / totalShares;
-    }
-
-    function maxSwappableAmount(bool swapRwaForRedeem) external view returns (uint256) {
-        uint256 rate = _getValidRate();
-        if (swapRwaForRedeem) {
-            uint256 totalRedeem = redeemReserve + _yieldVaultBalance();
-            if (address(clearingHouse) != address(0)) {
-                uint256 maxCollateralizedByWallet = _convertWithRate(rwaReserve, rate, true);
-                uint256 chLiquidity = clearingHouse.availableLiquidity();
-                totalRedeem += chLiquidity < maxCollateralizedByWallet ? chLiquidity : maxCollateralizedByWallet;
-            }
-            return _convertWithRate(totalRedeem, rate, false);
-        } else {
-            return _convertWithRate(rwaReserve, rate, true);
-        }
+    function getAsyncSwapRequest(uint256 requestId)
+        external
+        view
+        returns (
+            address recipient,
+            bool swapRwaForRedeem,
+            AsyncSwapStatus status,
+            uint256 pendingAmountIn,
+            bytes32 settlementRequestId
+        )
+    {
+        AsyncSwapRequest storage request = asyncSwapRequests[requestId];
+        return (
+            request.recipient,
+            request.swapRwaForRedeem,
+            request.status,
+            request.pendingAmountIn,
+            request.settlementRequestId
+        );
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -866,11 +963,12 @@ contract RWAHook is BaseHook, IUnlockCallback, Ownable {
     }
 
     function _recallFromYield(uint256 amount) internal {
-        if (amount > deployedToYield) amount = deployedToYield;
+        uint256 recallable = _yieldVaultBalance();
+        if (amount > recallable) amount = recallable;
         if (amount == 0) return;
         uint256 withdrawn = yieldVault.withdraw(amount, address(this), address(this));
-        uint256 deducted = withdrawn < amount ? withdrawn : amount;
-        deployedToYield -= deducted;
+        uint256 principalDeducted = withdrawn > deployedToYield ? deployedToYield : withdrawn;
+        deployedToYield -= principalDeducted;
         redeemReserve += withdrawn;
         emit YieldRecalled(withdrawn);
     }
@@ -907,6 +1005,10 @@ contract RWAHook is BaseHook, IUnlockCallback, Ownable {
 
     function _calculateFee(uint256 amountIn, bool swapRwaForRedeem) internal view returns (uint256) {
         uint256 rate = _getValidRate();
+        return _calculateFeeWithRate(amountIn, swapRwaForRedeem, rate);
+    }
+
+    function _calculateFeeWithRate(uint256 amountIn, bool swapRwaForRedeem, uint256 rate) internal view returns (uint256) {
         uint256 feeBips =
             swapRwaForRedeem ? _congestionFee(_effectiveRedeemReserve(rate)) : _congestionFee(_effectiveRwaReserve());
         return (amountIn * feeBips) / 10_000;
@@ -933,12 +1035,108 @@ contract RWAHook is BaseHook, IUnlockCallback, Ownable {
         return yieldVault.maxWithdraw(address(this));
     }
 
+    function _quoteAmountOutWithRate(uint256 amountIn, bool swapRwaForRedeem, uint256 rate)
+        internal
+        view
+        returns (uint256 amountOut)
+    {
+        uint256 fee = _calculateFeeWithRate(amountIn, swapRwaForRedeem, rate);
+        amountOut = _convertWithRate(amountIn - fee, rate, swapRwaForRedeem);
+    }
+
     function _effectiveRedeemReserve(uint256) internal view returns (uint256) {
         return redeemReserve + (pendingRedeemExpectedFromIssuer * PENDING_SETTLEMENT_CREDIT_BIPS) / 10_000;
     }
 
     function _effectiveRwaReserve() internal view returns (uint256) {
         return rwaReserve + (pendingRwaExpectedFromIssuer * PENDING_SETTLEMENT_CREDIT_BIPS) / 10_000;
+    }
+
+    function _maxImmediateAsyncInput(uint256 rate, bool swapRwaForRedeem) internal view returns (uint256) {
+        uint256 outputCapacity;
+
+        if (swapRwaForRedeem) {
+            outputCapacity = redeemReserve + deployedToYield;
+            if (address(clearingHouse) != address(0)) {
+                uint256 maxCollateralizedByWallet = _convertWithRate(rwaReserve, rate, true);
+                uint256 chLiquidity = clearingHouse.availableLiquidity();
+                outputCapacity += chLiquidity < maxCollateralizedByWallet ? chLiquidity : maxCollateralizedByWallet;
+            }
+        } else {
+            outputCapacity = rwaReserve;
+        }
+
+        return _inputForOutputCapacity(outputCapacity, rate, swapRwaForRedeem);
+    }
+
+    function _inputForOutputCapacity(uint256 outputCapacity, uint256 rate, bool swapRwaForRedeem)
+        internal
+        view
+        returns (uint256 maxInput)
+    {
+        if (outputCapacity == 0) return 0;
+
+        uint256 feeBips =
+            swapRwaForRedeem ? _congestionFee(_effectiveRedeemReserve(rate)) : _congestionFee(_effectiveRwaReserve());
+        if (feeBips >= 10_000) return 0;
+
+        uint256 netInput = swapRwaForRedeem
+            ? _convertWithRate(outputCapacity, rate, false)
+            : _convertWithRate(outputCapacity, rate, true);
+
+        maxInput = (netInput * 10_000) / (10_000 - feeBips);
+    }
+
+    function _executeImmediateAsyncSwap(bool swapRwaForRedeem, uint256 amountIn, uint256 rate, address recipient)
+        internal
+        returns (uint256 amountOut)
+    {
+        amountOut = _quoteAmountOutWithRate(amountIn, swapRwaForRedeem, rate);
+
+        if (swapRwaForRedeem) {
+            rwaReserve += amountIn;
+
+            if (amountOut <= redeemReserve) {
+                redeemReserve -= amountOut;
+            } else {
+                uint256 shortfall = amountOut - redeemReserve;
+
+                if (deployedToYield > 0 && address(yieldVault) != address(0)) {
+                    uint256 recallAmount = shortfall > _yieldVaultBalance() ? _yieldVaultBalance() : shortfall;
+                    _recallFromYield(recallAmount);
+                    shortfall = amountOut > redeemReserve ? amountOut - redeemReserve : 0;
+                }
+
+                if (shortfall == 0) {
+                    redeemReserve -= amountOut;
+                } else if (address(clearingHouse) != address(0)) {
+                    uint256 rwaForClearing = _convertWithRate(shortfall, rate, false);
+                    if (rwaForClearing > rwaReserve) revert InsufficientLiquidity();
+
+                    uint256 balBefore = IERC20Minimal(redeemAsset).balanceOf(address(this));
+                    IERC20Minimal(rwaToken).approve(address(clearingHouse), rwaForClearing);
+                    bool success = clearingHouse.settle(rwaToken, rwaForClearing, shortfall, address(this));
+                    if (!success) revert InsufficientLiquidity();
+
+                    uint256 received = IERC20Minimal(redeemAsset).balanceOf(address(this)) - balBefore;
+                    if (received < shortfall) revert ClearingHousePaymentFailed();
+
+                    rwaReserve -= rwaForClearing;
+                    redeemReserve = 0;
+                    emit ClearingHouseSettlement(rwaForClearing, shortfall, address(this));
+                } else {
+                    revert InsufficientLiquidity();
+                }
+            }
+
+            _safeTransfer(redeemAsset, recipient, amountOut);
+        } else {
+            redeemReserve += amountIn;
+
+            if (amountOut > rwaReserve) revert InsufficientLiquidity();
+            rwaReserve -= amountOut;
+            _safeTransfer(rwaToken, recipient, amountOut);
+        }
     }
 
     function _initiateIssuerRedemption(uint256 rwaAmount, uint256 rate) internal {
@@ -977,6 +1175,55 @@ contract RWAHook is BaseHook, IUnlockCallback, Ownable {
         emit IssuerMintInitiated(requestId, redeemAmount, expectedRwaOut);
     }
 
+    function _initiateAsyncSwapSettlement(
+        uint256 requestId,
+        address recipient,
+        bool swapRwaForRedeem,
+        uint256 pendingAmountIn,
+        uint256 minAsyncAmountOut,
+        uint256 rate
+    ) internal returns (uint256 expectedOutputAmount) {
+        uint256 feeAmount = _calculateFeeWithRate(pendingAmountIn, swapRwaForRedeem, rate);
+        uint256 netInput = pendingAmountIn - feeAmount;
+        if (netInput == 0) revert ZeroAmount();
+
+        if (swapRwaForRedeem) {
+            rwaReserve += feeAmount;
+            expectedOutputAmount = _convertWithRate(netInput, rate, true);
+            IERC20Minimal(rwaToken).approve(address(issuerAdapter), netInput);
+            bytes32 settlementRequestId =
+                issuerAdapter.requestRedemption(rwaToken, netInput, address(this), minAsyncAmountOut);
+
+            asyncSwapRequests[requestId] = AsyncSwapRequest({
+                recipient: recipient,
+                swapRwaForRedeem: true,
+                pendingAmountIn: pendingAmountIn,
+                claimableAmountOut: 0,
+                minAsyncAmountOut: minAsyncAmountOut,
+                settlementRequestId: settlementRequestId,
+                status: AsyncSwapStatus.Pending
+            });
+        } else {
+            redeemReserve += feeAmount;
+            expectedOutputAmount = _convertWithRate(netInput, rate, false);
+            IERC20Minimal(redeemAsset).approve(address(issuerAdapter), netInput);
+            bytes32 settlementRequestId =
+                issuerAdapter.requestMint(redeemAsset, netInput, address(this), minAsyncAmountOut);
+
+            asyncSwapRequests[requestId] = AsyncSwapRequest({
+                recipient: recipient,
+                swapRwaForRedeem: false,
+                pendingAmountIn: pendingAmountIn,
+                claimableAmountOut: 0,
+                minAsyncAmountOut: minAsyncAmountOut,
+                settlementRequestId: settlementRequestId,
+                status: AsyncSwapStatus.Pending
+            });
+        }
+
+        pendingAsyncSwapCount += 1;
+    }
+
     function _registerSettlement(
         bytes32 requestId,
         bool isMint,
@@ -993,7 +1240,7 @@ contract RWAHook is BaseHook, IUnlockCallback, Ownable {
             inputAmount: inputAmount,
             expectedOutputAmount: expectedOutputAmount,
             requestRate: requestRate,
-            initiatedAt: block.timestamp
+            initiatedAt: uint40(block.timestamp)
         });
         activeSettlementIds.push(requestId);
         _activeSettlementIndexPlusOne[requestId] = activeSettlementIds.length;
@@ -1028,8 +1275,7 @@ contract RWAHook is BaseHook, IUnlockCallback, Ownable {
         uint256 distributedToEpochs;
 
         if (settlement.isMint) {
-            uint256 accountedRwa = rwaReserve + rwaRedemptionReserve;
-            if (IERC20Minimal(rwaToken).balanceOf(address(this)) < accountedRwa + outputAmount) {
+            if (IERC20Minimal(rwaToken).balanceOf(address(this)) < _accountedRwaBalance() + outputAmount) {
                 revert SettlementBalanceMismatch();
             }
 
@@ -1037,8 +1283,7 @@ contract RWAHook is BaseHook, IUnlockCallback, Ownable {
             pendingRwaExpectedFromIssuer -= settlement.expectedOutputAmount;
             rwaReserve += poolOutput;
         } else {
-            uint256 accountedRedeem = redeemReserve + iouReserve;
-            if (IERC20Minimal(redeemAsset).balanceOf(address(this)) < accountedRedeem + outputAmount) {
+            if (IERC20Minimal(redeemAsset).balanceOf(address(this)) < _accountedRedeemBalance() + outputAmount) {
                 revert SettlementBalanceMismatch();
             }
 
@@ -1058,8 +1303,10 @@ contract RWAHook is BaseHook, IUnlockCallback, Ownable {
 
             if (settlement.isMint) {
                 exitEpochs[epochId].rwaReserved += epochOutput;
+                totalExitEpochRwaReserved += epochOutput;
             } else {
                 exitEpochs[epochId].redeemReserved += epochOutput;
+                totalExitEpochRedeemReserved += epochOutput;
             }
 
             exitEpochs[epochId].pendingSettlementCount -= 1;
@@ -1096,6 +1343,14 @@ contract RWAHook is BaseHook, IUnlockCallback, Ownable {
         activeSettlementIds.pop();
         delete _activeSettlementIndexPlusOne[requestId];
         delete activeSettlements[requestId];
+    }
+
+    function _accountedRwaBalance() internal view returns (uint256) {
+        return rwaReserve + totalExitEpochRwaReserved + claimableAsyncRwa;
+    }
+
+    function _accountedRedeemBalance() internal view returns (uint256) {
+        return redeemReserve + totalExitEpochRedeemReserved + claimableAsyncRedeem;
     }
 
     function _ensureRwaLiquidity(uint256 amount) internal {

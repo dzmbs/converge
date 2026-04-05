@@ -12,7 +12,8 @@ import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 
 import {IUniswapV4Router04} from "hookmate/interfaces/router/IUniswapV4Router04.sol";
 
-import {RWAHook} from "../src/RWAHook.sol";
+import {ConvergeHook} from "../src/ConvergeHook.sol";
+import {DeployableIssuerAdapter} from "../src/mocks/DeployableIssuerAdapter.sol";
 
 contract LocalSmokeTestScript is Script {
     using stdJson for string;
@@ -22,6 +23,7 @@ contract LocalSmokeTestScript is Script {
         address swapRouter;
         address rwaToken;
         address redeemAsset;
+        address issuerAdapter;
         address hook;
     }
 
@@ -31,13 +33,14 @@ contract LocalSmokeTestScript is Script {
         uint256 sharesAfterWithdraw;
         uint256 rwaBuyDelta;
         uint256 redeemSellDelta;
+        uint256 asyncClaimDelta;
     }
 
     function run() external {
         require(block.chainid == 31337, "local only");
 
         Deployment memory deployment = _loadDeployment();
-        RWAHook hook = RWAHook(deployment.hook);
+        ConvergeHook hook = ConvergeHook(deployment.hook);
         IUniswapV4Router04 router = IUniswapV4Router04(payable(deployment.swapRouter));
 
         (Currency currency0, Currency currency1) = _sortCurrencies(deployment.rwaToken, deployment.redeemAsset);
@@ -75,6 +78,9 @@ contract LocalSmokeTestScript is Script {
         uint256 withdrawShares = result.sharesAfterDeposit - result.sharesBefore;
         hook.withdraw(withdrawShares / 2, 0, 0, block.timestamp + 1 hours);
         result.sharesAfterWithdraw = hook.shares(deployer);
+        if (deployment.issuerAdapter != address(0)) {
+            result.asyncClaimDelta = _runAsyncSmoke(hook, deployment, deployer, swapAmount);
+        }
 
         vm.stopBroadcast();
 
@@ -84,6 +90,7 @@ contract LocalSmokeTestScript is Script {
         console2.log("shares after withdraw", result.sharesAfterWithdraw);
         console2.log("rwa buy delta       ", result.rwaBuyDelta);
         console2.log("redeem sell delta   ", result.redeemSellDelta);
+        console2.log("async claim delta   ", result.asyncClaimDelta);
 
         require(result.sharesAfterDeposit > result.sharesBefore, "deposit failed");
         require(result.rwaBuyDelta > 0, "redeem->rwa swap failed");
@@ -98,6 +105,7 @@ contract LocalSmokeTestScript is Script {
         deployment.swapRouter = json.readAddress(".swapRouter");
         deployment.rwaToken = json.readAddress(".rwaToken");
         deployment.redeemAsset = json.readAddress(".redeemAsset");
+        deployment.issuerAdapter = json.readAddress(".issuerAdapter");
         deployment.hook = json.readAddress(".hook");
     }
 
@@ -137,6 +145,25 @@ contract LocalSmokeTestScript is Script {
             block.timestamp + 1 hours
         );
         uint256 balanceAfter = IERC20(outputToken).balanceOf(receiver);
+        delta = balanceAfter - balanceBefore;
+    }
+
+    function _runAsyncSmoke(
+        ConvergeHook hook,
+        Deployment memory deployment,
+        address recipient,
+        uint256 amountIn
+    ) internal returns (uint256 delta) {
+        (uint256 requestId,, uint256 expectedOut) =
+            hook.requestAsyncSwap(false, amountIn, 0, 1, recipient, false, block.timestamp + 1 hours, "");
+        (, , , , bytes32 settlementRequestId) = hook.getAsyncSwapRequest(requestId);
+
+        uint256 balanceBefore = IERC20(deployment.rwaToken).balanceOf(recipient);
+        DeployableIssuerAdapter(deployment.issuerAdapter).settle(settlementRequestId, deployment.rwaToken, expectedOut);
+        hook.finalizeAsyncSwap(requestId);
+        hook.claimAsyncSwap(requestId);
+
+        uint256 balanceAfter = IERC20(deployment.rwaToken).balanceOf(recipient);
         delta = balanceAfter - balanceBefore;
     }
 

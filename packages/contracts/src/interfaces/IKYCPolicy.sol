@@ -14,7 +14,20 @@ interface IKYCPolicy {
         bool zeroForOne;
     }
 
+    struct DirectSwapValidationContext {
+        address requester;
+        address recipient;
+        address hook;
+        address tokenIn;
+        address tokenOut;
+        uint256 amountIn;
+        bool swapRwaForRedeem;
+    }
+
     function validateSwap(SwapValidationContext calldata context, bytes calldata hookData) external returns (bool);
+    function validateDirectSwap(DirectSwapValidationContext calldata context, bytes calldata authorization)
+        external
+        returns (bool);
     function validateDeposit(address account) external view returns (bool);
     function validateRedemption(address account) external view returns (bool);
 }

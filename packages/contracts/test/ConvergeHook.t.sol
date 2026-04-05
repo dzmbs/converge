@@ -20,8 +20,8 @@ import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 import {EasyPosm} from "./utils/libraries/EasyPosm.sol";
 import {BaseTest} from "./utils/BaseTest.sol";
 
-import {RWAHook} from "../src/RWAHook.sol";
-import {IOUToken} from "../src/IOUToken.sol";
+import {ConvergeHook} from "../src/ConvergeHook.sol";
+import {ConvergeQuoter} from "../src/ConvergeQuoter.sol";
 import {IKYCRegistry} from "../src/interfaces/IKYCRegistry.sol";
 import {IRWAOracle} from "../src/interfaces/IRWAOracle.sol";
 import {IClearingHouse} from "../src/interfaces/IClearingHouse.sol";
@@ -145,7 +145,7 @@ contract MockIssuerAdapter is IIssuerAdapter {
 }
 
 // ─── Test ──────────────────────────────────────────────────────────────
-contract RWAHookTest is BaseTest {
+contract ConvergeHookTest is BaseTest {
     using EasyPosm for IPositionManager;
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
@@ -153,7 +153,8 @@ contract RWAHookTest is BaseTest {
     bytes32 internal constant EIP712_DOMAIN_TYPEHASH =
         keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
 
-    RWAHook hook;
+    ConvergeHook hook;
+    ConvergeQuoter quoter;
     Currency currency0;
     Currency currency1;
     PoolKey poolKey;
@@ -215,23 +216,20 @@ contract RWAHookTest is BaseTest {
             address(this),
             uint8(18),
             uint8(18),
-            RWAHook.FeeConfig({
+            ConvergeHook.FeeConfig({
                 minFeeBips: 1,
                 maxFeeBips: 100,
                 lowThreshold: 1_000e18,
                 highThreshold: 100_000e18
             })
         );
-        deployCodeTo("RWAHook.sol:RWAHook", constructorArgs, flags);
-        hook = RWAHook(flags);
+        deployCodeTo("ConvergeHook.sol:ConvergeHook", constructorArgs, flags);
+        hook = ConvergeHook(flags);
+        quoter = new ConvergeQuoter();
 
         // Setup modules
         hook.setYieldVault(yieldVault);
         hook.setRebalanceStrategy(rebalanceStrategy);
-
-        // Deploy and set IOU token
-        IOUToken iou = new IOUToken("RWA IOU", "IOU-RWA", flags, 18);
-        hook.setIOUToken(iou);
 
         // Create pool
         poolKey = PoolKey(currency0, currency1, 0, 1, IHooks(hook));
@@ -288,7 +286,7 @@ contract RWAHookTest is BaseTest {
 
     function test_deposit_zeroAmount_reverts() public {
         vm.startPrank(alice);
-        vm.expectRevert(RWAHook.ZeroAmount.selector);
+        vm.expectRevert(ConvergeHook.ZeroAmount.selector);
         hook.deposit(0, 0, 0, block.timestamp + 1);
         vm.stopPrank();
     }
@@ -392,27 +390,40 @@ contract RWAHookTest is BaseTest {
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    //                     IOU TESTS
+    //                     ASYNC SWAP TESTS
     // ═══════════════════════════════════════════════════════════════════
 
-    function test_iou_requestAndRedeem() public {
+    function test_asyncSwap_requestFinalizeAndClaim_redeemForRwa() public {
+        issuerAdapter = new MockIssuerAdapter();
+        hook.setIssuerAdapter(issuerAdapter);
+
         vm.startPrank(alice);
-        uint256 iouAmount = hook.requestRedemption(10_000e18);
+        (uint256 requestId, uint256 instantOut, uint256 expectedOut) =
+            hook.requestAsyncSwap(false, 10_000e18, 0, 9_800e18, alice, false, block.timestamp + 1, "");
         vm.stopPrank();
 
-        IOUToken iou = hook.iouToken();
-        assertEq(iou.balanceOf(alice), iouAmount, "alice got IOUs");
+        assertEq(instantOut, 0, "async-only request should not fill instantly");
+        assertGt(expectedOut, 0, "expected output tracked");
 
-        // Owner resolves
-        MockERC20(Currency.unwrap(currency1)).approve(address(hook), iouAmount);
-        hook.resolveIOUs(iouAmount);
+        (
+            address recipient,
+            bool swapRwaForRedeem,
+            ConvergeHook.AsyncSwapStatus status,
+            ,
+            bytes32 settlementRequestId
+        ) = hook.getAsyncSwapRequest(requestId);
+        assertEq(recipient, alice, "recipient stored");
+        assertFalse(swapRwaForRedeem, "direction stored");
+        assertEq(uint256(status), uint256(ConvergeHook.AsyncSwapStatus.Pending), "request pending");
 
-        // Alice redeems
-        uint256 balBefore = MockERC20(Currency.unwrap(currency1)).balanceOf(alice);
+        issuerAdapter.settle(settlementRequestId, Currency.unwrap(currency0), expectedOut);
+        hook.finalizeAsyncSwap(requestId);
+
+        uint256 rwaBefore = MockERC20(Currency.unwrap(currency0)).balanceOf(alice);
         vm.prank(alice);
-        hook.redeemIOU(iouAmount);
-        uint256 balAfter = MockERC20(Currency.unwrap(currency1)).balanceOf(alice);
-        assertEq(balAfter - balBefore, iouAmount, "alice received redeem asset");
+        uint256 claimed = hook.claimAsyncSwap(requestId);
+        assertEq(MockERC20(Currency.unwrap(currency0)).balanceOf(alice) - rwaBefore, claimed, "claimed rwa");
+        assertEq(claimed, expectedOut, "claim matches settlement");
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -431,13 +442,13 @@ contract RWAHookTest is BaseTest {
     // ═══════════════════════════════════════════════════════════════════
 
     function test_totalValue() public {
-        assertGt(hook.totalValue(), 0, "should have value from setUp deposit");
+        assertGt(quoter.totalValue(hook), 0, "should have value from setUp deposit");
     }
 
-    function test_getAmountOut() public {
+    function test_quoterAmountOut() public {
         vm.prank(alice);
         hook.deposit(100_000e18, 0, 0, block.timestamp + 1);
-        uint256 out = hook.getAmountOut(1_000e18, false);
+        uint256 out = quoter.amountOut(hook, 1_000e18, false);
         assertGt(out, 900e18, "output close to 1:1");
         assertLt(out, 1_000e18, "output less than input (fees)");
     }
@@ -455,14 +466,14 @@ contract RWAHookTest is BaseTest {
 
     function test_deposit_deadlineExpired() public {
         vm.startPrank(alice);
-        vm.expectRevert(RWAHook.DeadlineExpired.selector);
+        vm.expectRevert(ConvergeHook.DeadlineExpired.selector);
         hook.deposit(0, 1000e18, 0, block.timestamp - 1);
         vm.stopPrank();
     }
 
     function test_deposit_slippageProtection() public {
         vm.startPrank(alice);
-        vm.expectRevert(RWAHook.SlippageExceeded.selector);
+        vm.expectRevert(ConvergeHook.SlippageExceeded.selector);
         hook.deposit(0, 1000e18, type(uint256).max, block.timestamp + 1);
         vm.stopPrank();
     }
@@ -478,7 +489,7 @@ contract RWAHookTest is BaseTest {
 
     function test_withdraw_insufficientShares() public {
         vm.startPrank(alice);
-        vm.expectRevert(RWAHook.InsufficientLiquidity.selector);
+        vm.expectRevert(ConvergeHook.InsufficientLiquidity.selector);
         hook.withdraw(1, 0, 0, block.timestamp + 1);
         vm.stopPrank();
     }
@@ -491,7 +502,7 @@ contract RWAHookTest is BaseTest {
         vm.prank(alice);
         hook.deposit(2_000e18, 0, 0, block.timestamp + 1);
 
-        uint256 feeHigh = hook.getCurrentFee(false);
+        uint256 feeHigh = quoter.currentFeeBips(hook, false);
 
         // Drain RWA reserves
         vm.startPrank(bob);
@@ -501,7 +512,7 @@ contract RWAHookTest is BaseTest {
         }
         vm.stopPrank();
 
-        uint256 feeLow = hook.getCurrentFee(false);
+        uint256 feeLow = quoter.currentFeeBips(hook, false);
         assertGe(feeLow, feeHigh, "fee should increase as reserves decrease");
     }
 
@@ -534,7 +545,7 @@ contract RWAHookTest is BaseTest {
         _fundUser(charlie);
 
         vm.startPrank(charlie);
-        vm.expectRevert(RWAHook.KYCRequired.selector);
+        vm.expectRevert(ConvergeHook.KYCRequired.selector);
         hook.deposit(0, 1000e18, 0, block.timestamp + 1);
         vm.stopPrank();
     }
@@ -567,9 +578,9 @@ contract RWAHookTest is BaseTest {
     function test_yield_includesInShareValue() public {
         vm.prank(alice);
         hook.deposit(0, 100_000e18, 0, block.timestamp + 1);
-        uint256 valueBefore = hook.shareValue(alice);
+        uint256 valueBefore = quoter.shareValue(hook, alice);
         hook.deployToYield(200_000e18);
-        uint256 valueAfter = hook.shareValue(alice);
+        uint256 valueAfter = quoter.shareValue(hook, alice);
         assertEq(valueAfter, valueBefore, "yield deployment shouldn't change share value");
     }
 
@@ -580,53 +591,74 @@ contract RWAHookTest is BaseTest {
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    //                     IOU EXTENDED TESTS
+    //                     ASYNC SWAP EXTENDED TESTS
     // ═══════════════════════════════════════════════════════════════════
 
-    function test_iou_airdrop() public {
+    function test_asyncSwap_partialFill_thenFinalizeAndClaim() public {
+        issuerAdapter = new MockIssuerAdapter();
+        hook.setIssuerAdapter(issuerAdapter);
+
         vm.prank(alice);
-        hook.requestRedemption(5_000e18);
+        hook.deposit(10_000e18, 0, 0, block.timestamp + 1);
+
+        uint256 redeemBefore = MockERC20(Currency.unwrap(currency1)).balanceOf(bob);
+        vm.startPrank(bob);
+        (uint256 requestId, uint256 instantOut, uint256 expectedOut) =
+            hook.requestAsyncSwap(true, 600_000e18, 1, 1, bob, true, block.timestamp + 1, "");
+        vm.stopPrank();
+
+        assertGt(instantOut, 0, "partial fill should pay instantly");
+        assertGt(expectedOut, 0, "remainder should be queued");
+        assertGt(MockERC20(Currency.unwrap(currency1)).balanceOf(bob) - redeemBefore, 0, "bob got instant redeem");
+
+        (
+            ,
+            ,
+            ConvergeHook.AsyncSwapStatus status,
+            uint256 pendingAmountIn,
+            bytes32 settlementRequestId
+        ) = hook.getAsyncSwapRequest(requestId);
+        assertGt(pendingAmountIn, 0, "pending amount tracked");
+        assertEq(uint256(status), uint256(ConvergeHook.AsyncSwapStatus.Pending), "request pending");
+
+        issuerAdapter.settle(settlementRequestId, Currency.unwrap(currency1), expectedOut);
+        hook.finalizeAsyncSwap(requestId);
+
+        uint256 balanceBeforeClaim = MockERC20(Currency.unwrap(currency1)).balanceOf(bob);
         vm.prank(bob);
-        hook.requestRedemption(8_000e18);
-
-        uint256 total = 13_000e18;
-        MockERC20(Currency.unwrap(currency1)).approve(address(hook), total);
-        hook.resolveIOUs(total);
-
-        address[] memory holders = new address[](2);
-        holders[0] = alice;
-        holders[1] = bob;
-        hook.airdropAndBurnIOUs(holders);
-
-        IOUToken iou = hook.iouToken();
-        assertEq(iou.balanceOf(alice), 0, "alice IOUs burned");
-        assertEq(iou.balanceOf(bob), 0, "bob IOUs burned");
+        uint256 claimed = hook.claimAsyncSwap(requestId);
+        assertEq(MockERC20(Currency.unwrap(currency1)).balanceOf(bob) - balanceBeforeClaim, claimed, "claimed redeem");
+        assertEq(claimed, expectedOut, "claim matches expected output");
     }
 
-    function test_iou_transferable() public {
+    function test_asyncSwap_claimCanBeTriggeredByThirdPartyForRecipient() public {
+        issuerAdapter = new MockIssuerAdapter();
+        hook.setIssuerAdapter(issuerAdapter);
+
         vm.prank(alice);
-        uint256 iouAmount = hook.requestRedemption(5_000e18);
+        (uint256 requestId,, uint256 expectedOut) =
+            hook.requestAsyncSwap(false, 5_000e18, 0, 1, bob, false, block.timestamp + 1, "");
 
-        IOUToken iou = hook.iouToken();
+        (, , , , bytes32 settlementRequestId) = hook.getAsyncSwapRequest(requestId);
+        issuerAdapter.settle(settlementRequestId, Currency.unwrap(currency0), expectedOut);
+        hook.finalizeAsyncSwap(requestId);
+
+        uint256 bobBefore = MockERC20(Currency.unwrap(currency0)).balanceOf(bob);
         vm.prank(alice);
-        iou.transfer(bob, iouAmount);
-        assertEq(iou.balanceOf(bob), iouAmount);
-
-        MockERC20(Currency.unwrap(currency1)).approve(address(hook), iouAmount);
-        hook.resolveIOUs(iouAmount);
-
-        uint256 balBefore = MockERC20(Currency.unwrap(currency1)).balanceOf(bob);
-        vm.prank(bob);
-        hook.redeemIOU(iouAmount);
-        assertEq(MockERC20(Currency.unwrap(currency1)).balanceOf(bob) - balBefore, iouAmount);
+        uint256 claimed = hook.claimAsyncSwap(requestId);
+        assertEq(MockERC20(Currency.unwrap(currency0)).balanceOf(bob) - bobBefore, claimed, "recipient got output");
     }
 
-    function test_iou_cannotRedeemBeforeResolve() public {
+    function test_asyncSwap_cannotClaimBeforeFinalize() public {
+        issuerAdapter = new MockIssuerAdapter();
+        hook.setIssuerAdapter(issuerAdapter);
+
         vm.prank(alice);
-        uint256 iouAmount = hook.requestRedemption(5_000e18);
+        (uint256 requestId,,) = hook.requestAsyncSwap(false, 5_000e18, 0, 1, alice, false, block.timestamp + 1, "");
+
         vm.prank(alice);
-        vm.expectRevert(RWAHook.InsufficientLiquidity.selector);
-        hook.redeemIOU(iouAmount);
+        vm.expectRevert(ConvergeHook.AsyncSwapStillPending.selector);
+        hook.claimAsyncSwap(requestId);
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -637,9 +669,9 @@ contract RWAHookTest is BaseTest {
         vm.prank(alice);
         hook.deposit(100_000e18, 0, 0, block.timestamp + 1);
 
-        uint256 out1 = hook.getAmountOut(1_000e18, false);
+        uint256 out1 = quoter.amountOut(hook, 1_000e18, false);
         oracle.setRate(1.1e18);
-        uint256 out2 = hook.getAmountOut(1_000e18, false);
+        uint256 out2 = quoter.amountOut(hook, 1_000e18, false);
         assertLt(out2, out1, "fewer RWA when RWA price increases");
     }
 
@@ -654,7 +686,7 @@ contract RWAHookTest is BaseTest {
     }
 
     function test_admin_setFeeConfig() public {
-        hook.setFeeConfig(RWAHook.FeeConfig({
+        hook.setFeeConfig(ConvergeHook.FeeConfig({
             minFeeBips: 5, maxFeeBips: 200,
             lowThreshold: 500e18, highThreshold: 50_000e18
         }));
@@ -664,8 +696,8 @@ contract RWAHookTest is BaseTest {
     }
 
     function test_admin_invalidFeeConfig() public {
-        vm.expectRevert(RWAHook.InvalidFeeConfig.selector);
-        hook.setFeeConfig(RWAHook.FeeConfig({
+        vm.expectRevert(ConvergeHook.InvalidFeeConfig.selector);
+        hook.setFeeConfig(ConvergeHook.FeeConfig({
             minFeeBips: 200, maxFeeBips: 100,
             lowThreshold: 500e18, highThreshold: 50_000e18
         }));
@@ -775,7 +807,7 @@ contract RWAHookTest is BaseTest {
     // ═══════════════════════════════════════════════════════════════════
 
     function test_share_value_accrues_from_fees() public {
-        uint256 valueBefore = hook.shareValue(address(this)); // setUp depositor
+        uint256 valueBefore = quoter.shareValue(hook, address(this)); // setUp depositor
 
         for (uint256 i = 0; i < 5; i++) {
             vm.startPrank(alice);
@@ -788,14 +820,14 @@ contract RWAHookTest is BaseTest {
             vm.stopPrank();
         }
 
-        uint256 valueAfter = hook.shareValue(address(this));
+        uint256 valueAfter = quoter.shareValue(hook, address(this));
         assertGt(valueAfter, valueBefore, "LP value increases from swap fees");
     }
 
     function test_fuzz_new_depositor_no_dilution(uint256 newDeposit) public {
         newDeposit = bound(newDeposit, 1e18, 5_000_000e18);
 
-        uint256 valueBefore = hook.shareValue(address(this));
+        uint256 valueBefore = quoter.shareValue(hook, address(this));
 
         MockERC20(Currency.unwrap(currency1)).mint(alice, newDeposit);
         vm.startPrank(alice);
@@ -803,7 +835,7 @@ contract RWAHookTest is BaseTest {
         hook.deposit(0, newDeposit, 0, block.timestamp + 1);
         vm.stopPrank();
 
-        uint256 valueAfter = hook.shareValue(address(this));
+        uint256 valueAfter = quoter.shareValue(hook, address(this));
         assertApproxEqRel(valueAfter, valueBefore, 0.001e18, "no dilution");
     }
 
@@ -844,10 +876,10 @@ contract RWAHookTest is BaseTest {
         bytes memory args2 = abi.encode(
             poolManager, Currency.unwrap(currency0), Currency.unwrap(currency1),
             oracle, kycPolicy, address(this), uint8(18), uint8(18),
-            RWAHook.FeeConfig({ minFeeBips: 1, maxFeeBips: 100, lowThreshold: 1_000e18, highThreshold: 100_000e18 })
+            ConvergeHook.FeeConfig({ minFeeBips: 1, maxFeeBips: 100, lowThreshold: 1_000e18, highThreshold: 100_000e18 })
         );
-        deployCodeTo("RWAHook.sol:RWAHook", args2, flags2);
-        RWAHook hook2 = RWAHook(flags2);
+        deployCodeTo("ConvergeHook.sol:ConvergeHook", args2, flags2);
+        ConvergeHook hook2 = ConvergeHook(flags2);
 
         // Try to initialize with wrong tokens — should revert
         MockERC20 fakeToken = new MockERC20("FAKE", "FAKE", 18);
@@ -895,8 +927,8 @@ contract RWAHookTest is BaseTest {
     function test_maxSwappableAmount() public {
         vm.prank(alice);
         hook.deposit(100_000e18, 0, 0, block.timestamp + 1);
-        assertGt(hook.maxSwappableAmount(false), 0, "max for redeem to rwa");
-        assertGt(hook.maxSwappableAmount(true), 0, "max for rwa to redeem");
+        assertGt(quoter.maxSwappableAmount(hook, false), 0, "max for redeem to rwa");
+        assertGt(quoter.maxSwappableAmount(hook, true), 0, "max for rwa to redeem");
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -1019,6 +1051,49 @@ contract RWAHookTest is BaseTest {
         vm.stopPrank();
     }
 
+    function test_kyc_full_allowsDirectAsyncSwapForAuthorizedRecipient() public {
+        issuerAdapter = new MockIssuerAdapter();
+        hook.setIssuerAdapter(issuerAdapter);
+        kycPolicy.setMode(RegistryKYCPolicy.Mode.FULL_COMPLIANCE_SIGNER);
+        kycPolicy.setComplianceSigner(complianceSigner, true);
+
+        bytes memory auth = _signedDirectSwapAuthorization(bob, bob, 5_000e18, false);
+        vm.prank(bob);
+        (uint256 requestId,,) = hook.requestAsyncSwap(
+            false,
+            5_000e18,
+            0,
+            1,
+            bob,
+            false,
+            block.timestamp + 1,
+            auth
+        );
+        assertGt(requestId, 0, "request created");
+    }
+
+    function test_kyc_full_blocksDirectAsyncSwapWrongRecipient() public {
+        issuerAdapter = new MockIssuerAdapter();
+        hook.setIssuerAdapter(issuerAdapter);
+        kycPolicy.setMode(RegistryKYCPolicy.Mode.FULL_COMPLIANCE_SIGNER);
+        kycPolicy.setComplianceSigner(complianceSigner, true);
+
+        bytes memory auth = _signedDirectSwapAuthorization(bob, bob, 5_000e18, false);
+        vm.startPrank(bob);
+        vm.expectRevert();
+        hook.requestAsyncSwap(
+            false,
+            5_000e18,
+            0,
+            1,
+            alice,
+            false,
+            block.timestamp + 1,
+            auth
+        );
+        vm.stopPrank();
+    }
+
     // ═══════════════════════════════════════════════════════════════════
     //                     EDGE CASES
     // ═══════════════════════════════════════════════════════════════════
@@ -1032,7 +1107,7 @@ contract RWAHookTest is BaseTest {
     }
 
     function test_edge_zero_fee_swap() public {
-        hook.setFeeConfig(RWAHook.FeeConfig({ minFeeBips: 0, maxFeeBips: 0, lowThreshold: 0, highThreshold: 1 }));
+        hook.setFeeConfig(ConvergeHook.FeeConfig({ minFeeBips: 0, maxFeeBips: 0, lowThreshold: 0, highThreshold: 1 }));
         vm.prank(alice);
         hook.deposit(100_000e18, 0, 0, block.timestamp + 1);
 
@@ -1117,8 +1192,8 @@ contract RWAHookTest is BaseTest {
 
     function test_fuzz_fee_always_within_bounds(uint256) public view {
         (uint16 minFee, uint16 maxFee,,) = hook.feeConfig();
-        uint256 feeTrue = hook.getCurrentFee(true);
-        uint256 feeFalse = hook.getCurrentFee(false);
+        uint256 feeTrue = quoter.currentFeeBips(hook, true);
+        uint256 feeFalse = quoter.currentFeeBips(hook, false);
         assertGe(feeTrue, minFee);
         assertLe(feeTrue, maxFee);
         assertGe(feeFalse, minFee);
@@ -1133,7 +1208,7 @@ contract RWAHookTest is BaseTest {
         hook.deposit(500_000e18, 0, 0, block.timestamp + 1);
 
         uint256 swapAmt = 10_000e18;
-        uint256 expectedOut = hook.getAmountOut(swapAmt, false);
+        uint256 expectedOut = quoter.amountOut(hook, swapAmt, false);
 
         address rwa = Currency.unwrap(currency0);
         uint256 rwaBefore = MockERC20(rwa).balanceOf(bob);
@@ -1149,12 +1224,12 @@ contract RWAHookTest is BaseTest {
         vm.prank(alice);
         hook.deposit(500_000e18, 0, 0, block.timestamp + 1);
 
-        uint256 prevFee = hook.getCurrentFee(false);
+        uint256 prevFee = quoter.currentFeeBips(hook, false);
         vm.startPrank(bob);
         for (uint256 i = 0; i < 30; i++) {
             if (hook.rwaReserve() < 20_000e18) break;
             _doSwap(false, 10_000e18);
-            uint256 currentFee = hook.getCurrentFee(false);
+            uint256 currentFee = quoter.currentFeeBips(hook, false);
             assertGe(currentFee, prevFee, "fee monotonically increases");
             prevFee = currentFee;
         }
@@ -1223,14 +1298,14 @@ contract RWAHookTest is BaseTest {
     function test_adversarial_yieldAccrual_reflected_in_shares() public {
         vm.prank(alice);
         hook.deposit(0, 100_000e18, 0, block.timestamp + 1);
-        uint256 valueBefore = hook.shareValue(alice);
+        uint256 valueBefore = quoter.shareValue(hook, alice);
         hook.deployToYield(50_000e18);
 
         // Simulate yield accrual
         MockERC20(Currency.unwrap(currency1)).mint(address(yieldVault), 5_000e18);
         MockYieldVault(address(yieldVault)).accrueYield(5_000e18);
 
-        uint256 valueAfter = hook.shareValue(alice);
+        uint256 valueAfter = quoter.shareValue(hook, alice);
         assertGt(valueAfter, valueBefore, "share value must include accrued yield");
     }
 
@@ -1251,14 +1326,17 @@ contract RWAHookTest is BaseTest {
         assertGt(received, 100_000e18 - 1000, "received more than deposited due to yield");
     }
 
-    function test_pendingRedemptionCollateral_notIncludedInLpValue() public {
-        uint256 valueBefore = hook.totalValue();
+    function test_asyncSwap_onlyAddsFeeToLpValue() public {
+        issuerAdapter = new MockIssuerAdapter();
+        hook.setIssuerAdapter(issuerAdapter);
+
+        uint256 valueBefore = quoter.totalValue(hook);
 
         vm.prank(alice);
-        hook.requestRedemption(10_000e18);
+        hook.requestAsyncSwap(false, 10_000e18, 0, 1, alice, false, block.timestamp + 1, "");
 
-        assertEq(hook.rwaRedemptionReserve(), 10_000e18, "locked redemption collateral tracked separately");
-        assertEq(hook.totalValue(), valueBefore, "LP value should ignore pending redemption collateral");
+        assertGt(quoter.totalValue(hook), valueBefore, "pool should retain async fee revenue");
+        assertLt(quoter.totalValue(hook) - valueBefore, 500e18, "pool should not count pending async settlement as LP NAV");
     }
 
     function test_rebalance_syncsClaimsAndRedeploysExcess() public {
@@ -1279,13 +1357,12 @@ contract RWAHookTest is BaseTest {
         hook.setIssuerAdapter(issuerAdapter);
         rebalanceStrategy.setConfig(0, 0, 100_000e18, 100_000e18);
 
-        uint256 valueBefore = hook.totalValue();
+        uint256 valueBefore = quoter.totalValue(hook);
         hook.rebalance();
 
-        assertEq(hook.activeSettlementCount(), 1, "mint settlement should be active");
         assertGt(hook.pendingRedeemSentToIssuer(), 0, "redeem asset should be in flight");
         assertGt(hook.pendingRwaExpectedFromIssuer(), 0, "rwa should be expected from issuer");
-        assertApproxEqAbs(hook.totalValue(), valueBefore, 1, "pending mint keeps LP value intact");
+        assertApproxEqAbs(quoter.totalValue(hook), valueBefore, 1, "pending mint keeps LP value intact");
     }
 
     function test_finalizeSettlement_addsRwaReserve() public {
@@ -1294,14 +1371,13 @@ contract RWAHookTest is BaseTest {
         rebalanceStrategy.setConfig(0, 0, 100_000e18, 100_000e18);
 
         hook.rebalance();
-        bytes32 requestId = hook.activeSettlementIds(0);
-        (, bool isMint, , uint256 expectedOutput,,) = hook.activeSettlements(requestId);
+        bytes32 requestId = hook.activeSettlementIdAt(0);
+        (bool isMint, uint256 expectedOutput) = hook.getActiveSettlement(requestId);
         assertTrue(isMint, "expected mint settlement");
 
         issuerAdapter.settle(requestId, Currency.unwrap(currency0), expectedOutput);
         hook.finalizeSettlement(requestId);
 
-        assertEq(hook.activeSettlementCount(), 0, "settlement should be removed");
         assertEq(hook.pendingRedeemSentToIssuer(), 0, "no redeem should remain in flight");
         assertEq(hook.pendingRwaExpectedFromIssuer(), 0, "no rwa should remain pending");
         assertEq(hook.rwaReserve(), expectedOutput, "minted rwa becomes liquid reserve");
@@ -1317,7 +1393,6 @@ contract RWAHookTest is BaseTest {
 
         hook.rebalance();
 
-        assertEq(hook.activeSettlementCount(), 1, "should not open a second same-direction settlement");
         assertEq(hook.pendingRedeemSentToIssuer(), pendingRedeemAfterFirst, "pending mint should not grow");
     }
 
@@ -1332,13 +1407,12 @@ contract RWAHookTest is BaseTest {
         vm.prank(alice);
         hook.deposit(500_000e18, 0, 0, block.timestamp + 1);
 
-        uint256 valueBefore = hook.totalValue();
+        uint256 valueBefore = quoter.totalValue(hook);
         hook.rebalance();
 
-        assertEq(hook.activeSettlementCount(), 1, "redemption settlement should be active");
         assertGt(hook.pendingRwaSentToIssuer(), 0, "rwa should be in flight");
         assertGt(hook.pendingRedeemExpectedFromIssuer(), 0, "redeem asset should be expected");
-        assertApproxEqAbs(hook.totalValue(), valueBefore, 1, "pending redemption keeps LP value intact");
+        assertApproxEqAbs(quoter.totalValue(hook), valueBefore, 1, "pending redemption keeps LP value intact");
     }
 
     function test_getCurrentFee_creditsPendingIssuerMint() public {
@@ -1346,9 +1420,9 @@ contract RWAHookTest is BaseTest {
         hook.setIssuerAdapter(issuerAdapter);
         rebalanceStrategy.setConfig(0, 0, 100_000e18, 100_000e18);
 
-        uint256 feeBefore = hook.getCurrentFee(false);
+        uint256 feeBefore = quoter.currentFeeBips(hook, false);
         hook.rebalance();
-        uint256 feeAfter = hook.getCurrentFee(false);
+        uint256 feeAfter = quoter.currentFeeBips(hook, false);
 
         assertLt(feeAfter, feeBefore, "pending rwa from issuer should soften buy-side congestion fee");
     }
@@ -1360,7 +1434,7 @@ contract RWAHookTest is BaseTest {
 
         hook.rebalance();
 
-        vm.expectRevert(RWAHook.ActiveSettlementsPending.selector);
+        vm.expectRevert(ConvergeHook.ActiveSettlementsPending.selector);
         hook.withdraw(1e18, 0, 0, block.timestamp + 1);
     }
 
@@ -1375,19 +1449,19 @@ contract RWAHookTest is BaseTest {
         vm.stopPrank();
 
         hook.rebalance();
-        bytes32 requestId = hook.activeSettlementIds(0);
-        (, bool isMint, , uint256 expectedOutput,,) = hook.activeSettlements(requestId);
+        bytes32 requestId = hook.activeSettlementIdAt(0);
+        (bool isMint, uint256 expectedOutput) = hook.getActiveSettlement(requestId);
         assertTrue(isMint, "expected mint settlement");
 
         hook.processExitEpoch(0);
-        (, , , uint256 pendingSettlementCount, bool processed) = hook.exitEpochs(0);
+        (uint64 pendingSettlementCount, bool processed) = hook.getExitEpochStatus(0);
         assertTrue(processed, "epoch should be processed");
         assertEq(pendingSettlementCount, 1, "epoch should own pending settlement");
 
         issuerAdapter.settle(requestId, Currency.unwrap(currency0), expectedOutput);
         hook.finalizeSettlement(requestId);
 
-        uint256 valueBeforeClaim = hook.totalValue();
+        uint256 valueBeforeClaim = quoter.totalValue(hook);
 
         uint256 rwaBefore = MockERC20(Currency.unwrap(currency0)).balanceOf(alice);
         uint256 redeemBefore = MockERC20(Currency.unwrap(currency1)).balanceOf(alice);
@@ -1397,7 +1471,7 @@ contract RWAHookTest is BaseTest {
         assertEq(MockERC20(Currency.unwrap(currency0)).balanceOf(alice) - rwaBefore, rwaOut, "claimed rwa");
         assertEq(MockERC20(Currency.unwrap(currency1)).balanceOf(alice) - redeemBefore, redeemOut, "claimed redeem");
         assertGt(rwaOut + redeemOut, 0, "claim should return value");
-        assertEq(hook.totalValue(), valueBeforeClaim, "claim should not change live pool NAV after epoch processing");
+        assertEq(quoter.totalValue(hook), valueBeforeClaim, "claim should not change live pool NAV after epoch processing");
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -1435,7 +1509,7 @@ contract RWAHookTest is BaseTest {
             tokenOut: zeroForOne ? Currency.unwrap(poolKey.currency1) : Currency.unwrap(poolKey.currency0),
             amountIn: amountIn,
             zeroForOne: zeroForOne,
-            nonce: kycPolicy.nonces(swapper),
+            nonce: kycPolicy.swapNonces(swapper),
             deadline: block.timestamp + 1,
             signature: ""
         });
@@ -1459,7 +1533,56 @@ contract RWAHookTest is BaseTest {
         bytes32 domainSeparator = keccak256(
             abi.encode(
                 EIP712_DOMAIN_TYPEHASH,
-                keccak256(bytes("RWAHookKYCPolicy")),
+                keccak256(bytes("ConvergeKYCPolicy")),
+                keccak256(bytes("1")),
+                block.chainid,
+                address(kycPolicy)
+            )
+        );
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(complianceSignerPk, digest);
+        auth.signature = abi.encodePacked(r, s, v);
+
+        return abi.encode(auth, complianceSigner);
+    }
+
+    function _signedDirectSwapAuthorization(address requester, address recipient, uint256 amountIn, bool swapRwaForRedeem)
+        internal
+        view
+        returns (bytes memory)
+    {
+        RegistryKYCPolicy.DirectSwapAuthorization memory auth = RegistryKYCPolicy.DirectSwapAuthorization({
+            requester: requester,
+            recipient: recipient,
+            hook: address(hook),
+            tokenIn: swapRwaForRedeem ? Currency.unwrap(currency0) : Currency.unwrap(currency1),
+            tokenOut: swapRwaForRedeem ? Currency.unwrap(currency1) : Currency.unwrap(currency0),
+            amountIn: amountIn,
+            swapRwaForRedeem: swapRwaForRedeem,
+            nonce: kycPolicy.directSwapNonces(requester),
+            deadline: block.timestamp + 1,
+            signature: ""
+        });
+
+        bytes32 structHash = keccak256(
+            abi.encode(
+                kycPolicy.DIRECT_SWAP_AUTHORIZATION_TYPEHASH(),
+                auth.requester,
+                auth.recipient,
+                auth.hook,
+                auth.tokenIn,
+                auth.tokenOut,
+                auth.amountIn,
+                auth.swapRwaForRedeem,
+                auth.nonce,
+                auth.deadline
+            )
+        );
+
+        bytes32 domainSeparator = keccak256(
+            abi.encode(
+                EIP712_DOMAIN_TYPEHASH,
+                keccak256(bytes("ConvergeKYCPolicy")),
                 keccak256(bytes("1")),
                 block.chainid,
                 address(kycPolicy)

@@ -1,10 +1,10 @@
-# Converge RWA Hook -- Technical Specification
+# Converge Hook -- Technical Specification
 
 ## What Is This
 
 A fixed-price AMM for trading Real World Asset tokens (e.g., ACRED, BUIDL, USDY) against their mint/redeem asset (e.g., USDC). Built as a Uniswap v4 hook, meaning it plugs directly into Uniswap's routing and aggregator network while completely replacing the default bonding curve with custom pricing logic.
 
-The system handles the full lifecycle of RWA liquidity: LP deposits, oracle-priced swaps, congestion-based dynamic fees, KYC/compliance enforcement via EIP-712-signed swap authorizations, yield deployment of idle reserves, clearing house integration for instant settlement of shortfalls, an IOU-based redemption queue for non-atomic redemptions, automated rebalancing via pluggable strategies with issuer mint/redeem rails, and epoch-based async LP exits for safe withdrawals during pending issuer settlements.
+The system handles the full lifecycle of RWA liquidity: LP deposits, oracle-priced swaps, congestion-based dynamic fees, KYC/compliance enforcement via EIP-712-signed authorizations, yield deployment of idle reserves, clearing house integration for instant settlement of shortfalls, explicit async swap requests for non-atomic execution, automated rebalancing via pluggable strategies with issuer mint/redeem rails, and epoch-based async LP exits for safe withdrawals during pending issuer settlements.
 
 ---
 
@@ -46,7 +46,7 @@ The oracle rate is provided by an external contract implementing `IRWAOracle`. F
 **What has been tested:**
 - Fuzz-tested across random amounts (1 to 400k tokens) -- output always > 0 and <= input at 1:1 rate (`test_fuzz_swap_output_bounds`)
 - Fuzz-tested that small and large swaps produce identical rates (`test_fuzz_no_slippage`, `test_swap_fixedPrice_noSlippage`)
-- `getAmountOut()` view function matches actual swap output across oracle rates 0.5x to 2.0x (`test_fuzz_oracle_rate_consistency`)
+- `ConvergeQuoter.amountOut()` matches actual swap output across oracle rates 0.5x to 2.0x (`test_fuzz_oracle_rate_consistency`)
 
 ---
 
@@ -80,8 +80,9 @@ The effective reserve used for fee calculation includes a credit for pending iss
 Compliance is handled by an external `IKYCPolicy` contract. The hook delegates all authorization decisions to the policy. The policy interface has three methods:
 
 - `validateSwap(SwapValidationContext, hookData)` -- called during `_beforeSwap` if a policy is set
+- `validateDirectSwap(DirectSwapValidationContext, authorization)` -- called during `requestAsyncSwap`
 - `validateDeposit(account)` -- called during `deposit`
-- `validateRedemption(account)` -- called during `requestRedemption`
+- `validateRedemption(account)` -- available for issuer-facing or other restricted redemption workflows
 
 The shipped policy implementation is `RegistryKYCPolicy`, which supports three modes:
 
@@ -154,32 +155,30 @@ Swap outputs are always paid from ERC20 reserves. Swap inputs accumulate as ERC6
 
 ---
 
-### IOU Redemption Queue
+### Async Swap Requests
 
-A mechanism for non-atomic RWA redemptions where users receive transferable IOU tokens.
+When the pool cannot or should not execute a trade atomically, users can opt into a delayed settlement path instead of taking a revert.
 
 **Flow:**
-1. User calls `requestRedemption(rwaAmount)` -- transfers RWA to hook, mints IOUs at oracle rate via `IOUToken.mint()`. RWA goes to `rwaRedemptionReserve` (separate from LP reserves). Amount tracked in `totalPendingRedemptions`
-2. Owner calls `resolveIOUs(amount)` -- deposits redeem asset into `iouReserve`, decrements `totalPendingRedemptions`
-3. User calls `redeemIOU(iouAmount)` -- burns IOUs, sends redeem asset from `iouReserve` 1:1
-4. Alternatively, owner calls `airdropAndBurnIOUs(holders[])` -- batch burn and payout
+1. User calls `requestAsyncSwap(swapRwaForRedeem, amountIn, minInstantAmountOut, minAsyncAmountOut, recipient, allowPartialFill, deadline, authorization)`
+2. If `allowPartialFill` is true, the hook executes as much of the order as current liquid reserves can support immediately
+3. Any remainder becomes a request-specific async settlement via the issuer adapter
+4. Once the issuer adapter reports settlement complete, anyone can call `finalizeAsyncSwap(requestId)` to mark the request claimable
+5. Anyone can then call `claimAsyncSwap(requestId)` and the hook pays the stored `recipient`
 
-**IOUToken:**
-- Minimal ERC20 (76 lines). Only the hook can mint/burn (`onlyHook` modifier)
-- Transferable -- IOUs can be traded on secondary markets
-- Decimals match the redeem asset
-
-**Redemption collateral:**
-- `rwaRedemptionReserve` tracks RWA locked for pending redemptions, separate from LP reserves
-- Owner can move collateral off-chain via `transferRedemptionCollateral(recipient, amount)` for issuer settlement
-- Redemption collateral is NOT included in LP value calculations (`_totalValueWithRate` does not include `rwaRedemptionReserve`)
+**Design properties:**
+- No fungible bearer IOU token is minted
+- Claims are request-specific and recipient-bound
+- Pending async user settlements are not counted as LP NAV; only retained fees accrue to the pool during the pending window
+- In strict KYC mode the async path uses `validateDirectSwap`, which signs over requester, recipient, hook, token pair, amount, and direction
 
 **What has been tested:**
-- Full request-resolve-redeem cycle (`test_iou_requestAndRedeem`)
-- Batch airdrop (`test_iou_airdrop`)
-- IOU transferability (`test_iou_transferable`)
-- Cannot redeem before resolve (`test_iou_cannotRedeemBeforeResolve`)
-- Pending redemption collateral not included in LP value (`test_pendingRedemptionCollateral_notIncludedInLpValue`)
+- Full async-only request/finalize/claim flow (`test_asyncSwap_requestFinalizeAndClaim_redeemForRwa`)
+- Partial instant fill plus async remainder (`test_asyncSwap_partialFill_thenFinalizeAndClaim`)
+- Third-party claim trigger that still pays the stored recipient (`test_asyncSwap_claimCanBeTriggeredByThirdPartyForRecipient`)
+- Claim blocked before finalization (`test_asyncSwap_cannotClaimBeforeFinalize`)
+- LP NAV only captures retained fees, not unsettled async user proceeds (`test_asyncSwap_onlyAddsFeeToLpValue`)
+- Strict-mode direct async authorization succeeds for valid recipient and rejects wrong recipient (`test_kyc_full_allowsDirectAsyncSwapForAuthorizedRecipient`, `test_kyc_full_blocksDirectAsyncSwapWrongRecipient`)
 
 ---
 
@@ -255,7 +254,7 @@ The `rebalance()` function (publicly callable) syncs claims, recalls yield, and 
 - `ActiveSettlement` struct records `requestId`, `isMint`, `inputAmount`, `expectedOutputAmount`, `requestRate`, `initiatedAt`
 - `activeSettlementIds[]` array with O(1) removal via swap-and-pop
 - `pendingRwaSentToIssuer`, `pendingRedeemSentToIssuer`, `pendingRwaExpectedFromIssuer`, `pendingRedeemExpectedFromIssuer` track in-flight amounts
-- Pending expected values are included in `_totalValueWithRate` so LP share prices remain accurate during settlements
+- Pending expected values are included in `_totalValueWithRate` as expected settlement marks, so LP NAV reflects in-flight issuer operations while instant withdrawals remain blocked
 - `_finalizeSettlement` distributes output proportionally between the live pool and any processed exit epochs that claimed the settlement
 
 **What has been tested:**
@@ -297,7 +296,7 @@ The hook uses the following v4 permissions:
                           UNISWAP V4 POOLMANAGER
                                   |
                      +------------+------------+
-                     |       RWAHook            |
+                     |     ConvergeHook         |
                      |                          |
                      |  _beforeSwap()           |
                      |  +- KYC policy check     |---- IKYCPolicy
@@ -321,10 +320,11 @@ The hook uses the following v4 permissions:
                      |  +- Epoch segregation    |
                      |  +- Settlement tracking  |
                      |                          |
-                     |  requestRedemption()     |
-                     |  resolveIOUs()           |---- IOUToken (ERC20)
-                     |  redeemIOU()             |
-                     |  airdropAndBurnIOUs()    |
+                     |  requestAsyncSwap()      |
+                     |  finalizeAsyncSwap()     |
+                     |  claimAsyncSwap()        |
+                     |  +- direct KYC auth      |
+                     |  +- issuer settlement    |
                      |                          |
                      |  rebalance()             |---- IRebalanceStrategy
                      |  +- Claim sync           |     +-- ThresholdRebalanceStrategy
@@ -342,8 +342,8 @@ The hook uses the following v4 permissions:
 
 | Contract | Lines | Purpose |
 |---|---|---|
-| `RWAHook.sol` | 1141 | Core hook: swaps, LP management, dual reserve model, yield, clearing house, IOU redemption, rebalancing, issuer settlement, async exits, KYC enforcement, fees |
-| `IOUToken.sol` | 76 | Minimal ERC20 receipt token for non-atomic redemptions. Hook-only mint/burn |
+| `ConvergeHook.sol` | core | Core hook: swaps, LP management, dual reserve model, yield, clearing house, async swap requests, rebalancing, issuer settlement, async exits, KYC enforcement, fees |
+| `ConvergeQuoter.sol` | helper | Read-only helper for quotes, NAV, fee, and capacity views moved out of the hook to reduce runtime size |
 | `RegistryKYCPolicy.sol` | 148 | Registry-backed KYC policy with three modes (NONE, LP_ONLY, FULL_COMPLIANCE_SIGNER). EIP-712 signed swap authorizations |
 | `ThresholdRebalanceStrategy.sol` | 68 | Configurable minimum reserves + buffer ratios for rebalancing |
 | `IKYCPolicy.sol` | 20 | Interface: pluggable compliance policy with swap/deposit/redemption validation |
@@ -354,14 +354,13 @@ The hook uses the following v4 permissions:
 | `IRebalanceStrategy.sol` | 28 | Interface: rebalance target computation with full state input |
 | `IIssuerAdapter.sol` | 34 | Interface: issuer mint/redeem rail with settlement tracking |
 
-**Total source:** ~1583 lines across 11 contracts/interfaces.
-**Test file:** 1474 lines (`RWAHook.t.sol`) plus test utilities.
+**Test file:** `ConvergeHook.t.sol` plus test utilities.
 
 ---
 
 ## Test Coverage
 
-### 71 Tests Total
+### 80 Tests Total
 
 | Category | Count | Tests |
 |---|---|---|
@@ -370,19 +369,19 @@ The hook uses the following v4 permissions:
 | Swaps | 5 | `test_swap_redeemForRwa`, `test_swap_rwaForRedeem`, `test_swap_fixedPrice_noSlippage`, `test_swap_insufficientLiquidity`, `test_swap_yieldRecall_coversShortfall` |
 | Fees | 2 | `test_fee_congestionBased`, `test_fee_monotonically_increases_as_reserves_drain` |
 | KYC (basic) | 3 | `test_kyc_poolOnly_anyoneCanSwap`, `test_kyc_poolAndLP_blocksNonKYCDeposit`, `test_kyc_poolAndLP_allowsKYCDeposit` |
-| KYC (full compliance signer) | 6 | `test_kyc_full_blocksUntrustedRouter`, `test_kyc_full_allowsKYCSwap`, `test_kyc_full_blocksUnauthorizedSwapper`, `test_kyc_full_blocksReplay`, `test_kyc_full_blocksWrongAmountSignature`, `test_kyc_full_blocksUntrustedComplianceSigner` |
-| IOU Redemption | 4 | `test_iou_requestAndRedeem`, `test_iou_airdrop`, `test_iou_transferable`, `test_iou_cannotRedeemBeforeResolve` |
+| KYC (full compliance signer) | 8 | `test_kyc_full_blocksUntrustedRouter`, `test_kyc_full_allowsKYCSwap`, `test_kyc_full_blocksUnauthorizedSwapper`, `test_kyc_full_blocksReplay`, `test_kyc_full_blocksWrongAmountSignature`, `test_kyc_full_blocksUntrustedComplianceSigner`, `test_kyc_full_allowsDirectAsyncSwapForAuthorizedRecipient`, `test_kyc_full_blocksDirectAsyncSwapWrongRecipient` |
 | Yield | 4 | `test_yield_deploy`, `test_yield_recall`, `test_yield_includesInShareValue`, `test_yield_onlyOwner` |
 | Oracle | 1 | `test_oracle_rateChange` |
 | Admin | 4 | `test_admin_twoStepOwnership`, `test_admin_onlyOwner`, `test_admin_setFeeConfig`, `test_admin_invalidFeeConfig` |
 | Claims Management | 2 | `test_claims_accumulateFromSwaps`, `test_claims_withdraw` |
-| View Functions | 3 | `test_totalValue`, `test_getAmountOut`, `test_maxSwappableAmount` |
-| Share Value | 2 | `test_share_value_accrues_from_fees`, `test_pendingRedemptionCollateral_notIncludedInLpValue` |
+| View / Quoter | 3 | `test_totalValue`, `test_getAmountOut`, `test_maxSwappableAmount` |
+| Share Value | 1 | `test_share_value_accrues_from_fees` |
 | Fuzz | 8 | `test_fuzz_swap_output_bounds`, `test_fuzz_deposit_withdraw_roundtrip`, `test_fuzz_no_slippage`, `test_fuzz_new_depositor_no_dilution`, `test_fuzz_swap_both_directions`, `test_fuzz_deposit_share_proportionality`, `test_fuzz_fee_always_within_bounds`, `test_fuzz_oracle_rate_consistency` |
 | Edge Cases | 5 | `test_edge_minimum_swap`, `test_edge_zero_fee_swap`, `test_edge_deposit_then_swap_then_withdraw`, `test_edge_yield_deploy_swap_recalls_automatically`, `test_edge_yield_recall_on_withdraw` |
 | Adversarial | 3 | `test_adversarial_poolHijack_blocked`, `test_adversarial_yieldAccrual_reflected_in_shares`, `test_adversarial_yieldAccrual_withdrawable` |
 | Multi-User Stress | 1 | `test_multiUser_full_lifecycle` (4 users, 6 phases: deposit/swap/yield/oracle-change/more-swaps/recall-and-withdraw) |
 | Rebalance + Issuer | 7 | `test_rebalance_syncsClaimsAndRedeploysExcess`, `test_rebalance_initiatesIssuerMint_forRwaShortfall`, `test_finalizeSettlement_addsRwaReserve`, `test_rebalance_doesNotOvercorrectWithPendingMint`, `test_rebalance_initiatesIssuerRedemption_forRedeemShortfall`, `test_getCurrentFee_creditsPendingIssuerMint`, `test_withdraw_revertsWhileIssuerSettlementPending` |
+| Async Swap | 5 | `test_asyncSwap_requestFinalizeAndClaim_redeemForRwa`, `test_asyncSwap_partialFill_thenFinalizeAndClaim`, `test_asyncSwap_claimCanBeTriggeredByThirdPartyForRecipient`, `test_asyncSwap_cannotClaimBeforeFinalize`, `test_asyncSwap_onlyAddsFeeToLpValue` |
 | Async Exit | 1 | `test_asyncExit_waitsForIssuerSettlementThenClaims` |
 | Gas Snapshots | 2 | `test_gas_swap`, `test_gas_deposit` |
 
@@ -392,7 +391,7 @@ The hook uses the following v4 permissions:
 
 Measured via `vm.snapshotGasLastCall` in Foundry:
 
-| Operation | Gas (RWAHookTest) | Gas (RWAHookBattleTest) |
+| Operation | Gas (ConvergeHookTest) | Gas (legacy battle test) |
 |---|---|---|
 | Swap (redeem for RWA, 10k) | 172,752 | 177,326 |
 | Swap (RWA for redeem, 10k) | -- | 177,304 |

@@ -114,5 +114,7 @@ forge script script/00_DeployStack.s.sol:DeployStackScript \
 ## Notes
 
 - This protocol does not use normal v4 LP positions for capital. Direct `modifyLiquidity` is blocked in the hook.
-- Pool creation is still Uniswap v4 initialization, but usable liquidity is seeded through `RWAHook.deposit(...)`.
+- Pool creation is still Uniswap v4 initialization, but usable liquidity is seeded through `ConvergeHook.deposit(...)`.
+- Read-only integrations should prefer `ConvergeQuoter` for NAV, quote, fee, and capacity views rather than depending on the hook to expose convenience helpers.
 - For strict swap-KYC mode, configure `KYC_MODE=2` and set `COMPLIANCE_SIGNER`.
+- Local smoke coverage is provided by `script/01_LocalSmokeTest.s.sol`, which exercises deposit, both atomic swap directions, withdraw, and the async swap request flow against Anvil.

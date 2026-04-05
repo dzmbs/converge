@@ -37,6 +37,9 @@ contract RegistryKYCPolicy is IKYCPolicy, Ownable, EIP712 {
     bytes32 public constant SWAP_AUTHORIZATION_TYPEHASH = keccak256(
         "SwapAuthorization(address swapper,address hook,bytes32 poolId,address router,address tokenIn,address tokenOut,uint256 amountIn,bool zeroForOne,uint256 nonce,uint256 deadline)"
     );
+    bytes32 public constant DIRECT_SWAP_AUTHORIZATION_TYPEHASH = keccak256(
+        "DirectSwapAuthorization(address requester,address recipient,address hook,address tokenIn,address tokenOut,uint256 amountIn,bool swapRwaForRedeem,uint256 nonce,uint256 deadline)"
+    );
 
     struct SwapAuthorization {
         address swapper;
@@ -52,13 +55,27 @@ contract RegistryKYCPolicy is IKYCPolicy, Ownable, EIP712 {
         bytes signature;
     }
 
+    struct DirectSwapAuthorization {
+        address requester;
+        address recipient;
+        address hook;
+        address tokenIn;
+        address tokenOut;
+        uint256 amountIn;
+        bool swapRwaForRedeem;
+        uint256 nonce;
+        uint256 deadline;
+        bytes signature;
+    }
+
     IKYCRegistry public registry;
     Mode public mode;
     mapping(address => bool) public trustedRouters;
     mapping(address => bool) public complianceSigners;
-    mapping(address => uint256) public nonces;
+    mapping(address => uint256) public swapNonces;
+    mapping(address => uint256) public directSwapNonces;
 
-    constructor(IKYCRegistry _registry, Mode _mode, address _owner) Ownable(_owner) EIP712("RWAHookKYCPolicy", "1") {
+    constructor(IKYCRegistry _registry, Mode _mode, address _owner) Ownable(_owner) EIP712("ConvergeKYCPolicy", "1") {
         if (address(_registry) == address(0)) revert ZeroAddress();
         registry = _registry;
         mode = _mode;
@@ -96,7 +113,7 @@ contract RegistryKYCPolicy is IKYCPolicy, Ownable, EIP712 {
 
         if (auth.deadline < block.timestamp) revert AuthorizationExpired();
         if (auth.swapper != IUniswapV4Router04(payable(context.router)).msgSender()) revert InvalidSwapper();
-        if (auth.nonce != nonces[auth.swapper]) revert InvalidNonce();
+        if (auth.nonce != swapNonces[auth.swapper]) revert InvalidNonce();
 
         if (
             auth.hook != msg.sender ||
@@ -132,7 +149,57 @@ contract RegistryKYCPolicy is IKYCPolicy, Ownable, EIP712 {
             revert InvalidSignature();
         }
 
-        nonces[auth.swapper] += 1;
+        swapNonces[auth.swapper] += 1;
+        return true;
+    }
+
+    function validateDirectSwap(DirectSwapValidationContext calldata context, bytes calldata authorization)
+        external
+        returns (bool)
+    {
+        if (mode != Mode.FULL_COMPLIANCE_SIGNER) return true;
+
+        (DirectSwapAuthorization memory auth, address complianceSigner) =
+            abi.decode(authorization, (DirectSwapAuthorization, address));
+        if (!complianceSigners[complianceSigner]) revert InvalidComplianceSigner();
+
+        if (auth.deadline < block.timestamp) revert AuthorizationExpired();
+        if (auth.requester != context.requester) revert InvalidSwapper();
+        if (auth.recipient != context.recipient) revert InvalidSwapContext();
+        if (auth.nonce != directSwapNonces[auth.requester]) revert InvalidNonce();
+
+        if (
+            auth.hook != context.hook ||
+            auth.tokenIn != context.tokenIn ||
+            auth.tokenOut != context.tokenOut ||
+            auth.amountIn != context.amountIn ||
+            auth.swapRwaForRedeem != context.swapRwaForRedeem
+        ) {
+            revert InvalidSwapContext();
+        }
+
+        bytes32 digest = _hashTypedDataV4(
+            keccak256(
+                abi.encode(
+                    DIRECT_SWAP_AUTHORIZATION_TYPEHASH,
+                    auth.requester,
+                    auth.recipient,
+                    auth.hook,
+                    auth.tokenIn,
+                    auth.tokenOut,
+                    auth.amountIn,
+                    auth.swapRwaForRedeem,
+                    auth.nonce,
+                    auth.deadline
+                )
+            )
+        );
+
+        if (!SignatureChecker.isValidSignatureNow(complianceSigner, digest, auth.signature)) {
+            revert InvalidSignature();
+        }
+
+        directSwapNonces[auth.requester] += 1;
         return true;
     }
 

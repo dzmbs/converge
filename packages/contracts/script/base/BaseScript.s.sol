@@ -20,6 +20,7 @@ abstract contract BaseScript is Script, Deployers {
         address kycPolicy;
         address yieldVault;
         address rebalanceStrategy;
+        address issuerAdapter;
         address iouToken;
         address hook;
         bytes32 poolId;
@@ -66,6 +67,7 @@ abstract contract BaseScript is Script, Deployers {
         vm.serializeAddress(root, "kycPolicy", deployment.kycPolicy);
         vm.serializeAddress(root, "yieldVault", deployment.yieldVault);
         vm.serializeAddress(root, "rebalanceStrategy", deployment.rebalanceStrategy);
+        vm.serializeAddress(root, "issuerAdapter", deployment.issuerAdapter);
         vm.serializeAddress(root, "iouToken", deployment.iouToken);
         vm.serializeAddress(root, "hook", deployment.hook);
         string memory json = vm.serializeBytes32(root, "poolId", deployment.poolId);
@@ -84,6 +86,7 @@ abstract contract BaseScript is Script, Deployers {
         console2.log("kycPolicy          ", deployment.kycPolicy);
         console2.log("yieldVault         ", deployment.yieldVault);
         console2.log("rebalanceStrategy  ", deployment.rebalanceStrategy);
+        console2.log("issuerAdapter      ", deployment.issuerAdapter);
         console2.log("iouToken           ", deployment.iouToken);
         console2.log("hook               ", deployment.hook);
         console2.logBytes32(deployment.poolId);

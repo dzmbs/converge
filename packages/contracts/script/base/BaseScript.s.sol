@@ -5,9 +5,39 @@ import {Script, console2} from "forge-std/Script.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 
+import {IPermit2} from "permit2/src/interfaces/IPermit2.sol";
+import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
+import {IPositionManager} from "@uniswap/v4-periphery/src/interfaces/IPositionManager.sol";
+import {IUniswapV4Router04} from "hookmate/interfaces/router/IUniswapV4Router04.sol";
 import {Deployers} from "../../test/utils/Deployers.sol";
 
 abstract contract BaseScript is Script, Deployers {
+    /// @dev Override deployArtifacts to support env var overrides for resuming partial deploys.
+    ///      Set POOL_MANAGER, POSITION_MANAGER, SWAP_ROUTER env vars to skip deploying those.
+    function deployArtifacts() internal override {
+        deployPermit2();
+
+        address pmAddr = vm.envOr("POOL_MANAGER", address(0));
+        if (pmAddr != address(0)) {
+            poolManager = IPoolManager(pmAddr);
+        } else {
+            deployPoolManager();
+        }
+
+        address posAddr = vm.envOr("POSITION_MANAGER", address(0));
+        if (posAddr != address(0)) {
+            positionManager = IPositionManager(posAddr);
+        } else {
+            deployPositionManager();
+        }
+
+        address routerAddr = vm.envOr("SWAP_ROUTER", address(0));
+        if (routerAddr != address(0)) {
+            swapRouter = IUniswapV4Router04(payable(routerAddr));
+        } else {
+            deployRouter();
+        }
+    }
     struct DeploymentFile {
         address permit2;
         address poolManager;
@@ -23,12 +53,16 @@ abstract contract BaseScript is Script, Deployers {
         address issuerAdapter;
         address iouToken;
         address hook;
+        address quoter;
+        address faucet;
         bytes32 poolId;
     }
 
     function _etch(address target, bytes memory bytecode) internal override {
         if (block.chainid == 31337) {
             vm.rpc("anvil_setCode", string.concat('["', vm.toString(target), '",', '"', vm.toString(bytecode), '"]'));
+        } else if (target.code.length > 0) {
+            // Contract already deployed at canonical address (e.g. Permit2 on Arc) — skip etch.
         } else {
             revert("Unsupported etch on this network");
         }
@@ -70,6 +104,8 @@ abstract contract BaseScript is Script, Deployers {
         vm.serializeAddress(root, "issuerAdapter", deployment.issuerAdapter);
         vm.serializeAddress(root, "iouToken", deployment.iouToken);
         vm.serializeAddress(root, "hook", deployment.hook);
+        vm.serializeAddress(root, "quoter", deployment.quoter);
+        vm.serializeAddress(root, "faucet", deployment.faucet);
         string memory json = vm.serializeBytes32(root, "poolId", deployment.poolId);
         vm.writeJson(json, _deploymentPath());
     }
@@ -89,6 +125,8 @@ abstract contract BaseScript is Script, Deployers {
         console2.log("issuerAdapter      ", deployment.issuerAdapter);
         console2.log("iouToken           ", deployment.iouToken);
         console2.log("hook               ", deployment.hook);
+        console2.log("quoter             ", deployment.quoter);
+        console2.log("faucet             ", deployment.faucet);
         console2.logBytes32(deployment.poolId);
     }
 

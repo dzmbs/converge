@@ -1,6 +1,13 @@
 "use client";
 
 import { PrivyProvider } from "@privy-io/react-auth";
+import { WagmiProvider } from "@privy-io/wagmi";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { wagmiConfig } from "@/lib/wagmi";
+import { arcTestnet, baseSepolia } from "@/lib/chains";
+import { PoolProvider } from "@/components/PoolProvider";
+
+const queryClient = new QueryClient();
 
 export function Providers({ children }: { children: React.ReactNode }) {
   return (
@@ -25,9 +32,17 @@ export function Providers({ children }: { children: React.ReactNode }) {
         embeddedWallets: {
           ethereum: { createOnLogin: "users-without-wallets" },
         },
+        supportedChains: [arcTestnet, baseSepolia],
+        defaultChain: arcTestnet,
       }}
     >
-      {children}
+      <QueryClientProvider client={queryClient}>
+        <WagmiProvider config={wagmiConfig}>
+          <PoolProvider>
+            {children}
+          </PoolProvider>
+        </WagmiProvider>
+      </QueryClientProvider>
     </PrivyProvider>
   );
 }

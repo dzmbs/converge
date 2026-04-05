@@ -1,0 +1,325 @@
+[
+  {
+    "type": "function",
+    "name": "amountOut",
+    "inputs": [
+      {
+        "name": "hook",
+        "type": "address",
+        "internalType": "contract ConvergeHook"
+      },
+      {
+        "name": "amountIn",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "swapRwaForRedeem",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "currentFeeBips",
+    "inputs": [
+      {
+        "name": "hook",
+        "type": "address",
+        "internalType": "contract ConvergeHook"
+      },
+      {
+        "name": "swapRwaForRedeem",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getLpSnapshot",
+    "inputs": [
+      {
+        "name": "hook",
+        "type": "address",
+        "internalType": "contract ConvergeHook"
+      },
+      {
+        "name": "lp",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "snapshot",
+        "type": "tuple",
+        "internalType": "struct ConvergeQuoter.LpSnapshot",
+        "components": [
+          {
+            "name": "shareBalance",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "shareValue",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "totalShares",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "totalValue",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getPoolSnapshot",
+    "inputs": [
+      {
+        "name": "hook",
+        "type": "address",
+        "internalType": "contract ConvergeHook"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "snapshot",
+        "type": "tuple",
+        "internalType": "struct ConvergeQuoter.PoolSnapshot",
+        "components": [
+          {
+            "name": "totalValue",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "totalShares",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "rwaReserve",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "redeemReserve",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "claimsRwa",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "claimsRedeem",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "deployedToYield",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "pendingRwaSentToIssuer",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "pendingRedeemSentToIssuer",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "pendingRwaExpectedFromIssuer",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "pendingRedeemExpectedFromIssuer",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "pendingAsyncSwapCount",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "claimableAsyncRwa",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "claimableAsyncRedeem",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getQuote",
+    "inputs": [
+      {
+        "name": "hook",
+        "type": "address",
+        "internalType": "contract ConvergeHook"
+      },
+      {
+        "name": "amountIn",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "swapRwaForRedeem",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "quote",
+        "type": "tuple",
+        "internalType": "struct ConvergeQuoter.Quote",
+        "components": [
+          {
+            "name": "rate",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "feeBips",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "feeAmount",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "amountOut",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "maxSwappableAmount",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "maxSwappableAmount",
+    "inputs": [
+      {
+        "name": "hook",
+        "type": "address",
+        "internalType": "contract ConvergeHook"
+      },
+      {
+        "name": "swapRwaForRedeem",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "shareValue",
+    "inputs": [
+      {
+        "name": "hook",
+        "type": "address",
+        "internalType": "contract ConvergeHook"
+      },
+      {
+        "name": "lp",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "totalValue",
+    "inputs": [
+      {
+        "name": "hook",
+        "type": "address",
+        "internalType": "contract ConvergeHook"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "error",
+    "name": "OracleRateOutOfBounds",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "OracleStale",
+    "inputs": []
+  }
+]

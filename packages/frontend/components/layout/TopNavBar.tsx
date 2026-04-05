@@ -7,9 +7,10 @@ import { MobileWalletButton } from "@/components/wallet/MobileWalletButton";
 
 const navLinks = [
   { href: "/swap", label: "Swap" },
+  { href: "/pool", label: "Pool" },
+  { href: "/faucet", label: "Faucet" },
+  { href: "/bridge", label: "Bridge" },
   { href: "/dashboard", label: "Dashboard" },
-  { href: "/settlement", label: "Portfolio" },
-  { href: "#", label: "Compliance" },
 ];
 
 export function TopNavBar() {

@@ -22,13 +22,18 @@ import {V4RouterDeployer} from "hookmate/artifacts/V4Router.sol";
  *
  * Automatically does the following:
  * 1. Setup deployments for Permit2, PoolManager, PositionManager and V4SwapRouter.
- * 2. Check if chainId is 31337, is so, deploys local instances.
+ * 2. Check if chainId is 31337 or a chain without canonical v4 (e.g. Arc 5042002),
+ *    if so, deploys local instances.
  * 3. If not, uses existing canonical deployments on the selected network.
  * 4. Provides utility functions to deploy tokens and currency pairs.
  *
  * This contract can be used for both local testing and fork testing.
  */
 abstract contract Deployers {
+    /// @dev Returns true for chains where we need to deploy the full v4 stack ourselves.
+    function _needsFreshV4Deploy() internal view returns (bool) {
+        return block.chainid == 31337 || block.chainid == 5042002;
+    }
     IPermit2 permit2;
     IPoolManager poolManager;
     IPositionManager positionManager;
@@ -70,7 +75,7 @@ abstract contract Deployers {
     }
 
     function deployPoolManager() internal virtual {
-        if (block.chainid == 31337) {
+        if (_needsFreshV4Deploy()) {
             poolManager = IPoolManager(V4PoolManagerDeployer.deploy(address(0x4444)));
         } else {
             poolManager = IPoolManager(AddressConstants.getPoolManagerAddress(block.chainid));
@@ -78,7 +83,7 @@ abstract contract Deployers {
     }
 
     function deployPositionManager() internal virtual {
-        if (block.chainid == 31337) {
+        if (_needsFreshV4Deploy()) {
             positionManager = IPositionManager(
                 V4PositionManagerDeployer.deploy(
                     address(poolManager), address(permit2), 300_000, address(0), address(0)
@@ -90,7 +95,7 @@ abstract contract Deployers {
     }
 
     function deployRouter() internal virtual {
-        if (block.chainid == 31337) {
+        if (_needsFreshV4Deploy()) {
             swapRouter = IUniswapV4Router04(payable(V4RouterDeployer.deploy(address(poolManager), address(permit2))));
         } else {
             swapRouter = IUniswapV4Router04(payable(AddressConstants.getV4SwapRouterAddress(block.chainid)));
@@ -101,7 +106,7 @@ abstract contract Deployers {
         revert("Not implemented");
     }
 
-    function deployArtifacts() internal {
+    function deployArtifacts() internal virtual {
         // Order matters.
         deployPermit2();
         deployPoolManager();

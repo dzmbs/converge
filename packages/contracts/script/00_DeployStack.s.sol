@@ -9,7 +9,10 @@ import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {HookMiner} from "@uniswap/v4-periphery/src/utils/HookMiner.sol";
 
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ConvergeHook} from "../src/ConvergeHook.sol";
+import {ConvergeQuoter} from "../src/ConvergeQuoter.sol";
+import {DemoFaucet} from "../src/DemoFaucet.sol";
 import {IKYCRegistry} from "../src/interfaces/IKYCRegistry.sol";
 import {IRWAOracle} from "../src/interfaces/IRWAOracle.sol";
 import {IKYCPolicy} from "../src/interfaces/IKYCPolicy.sol";
@@ -159,6 +162,29 @@ contract DeployStackScript is BaseScript {
             hook.deposit(config.initialRwaSeed, config.initialRedeemSeed, 0, block.timestamp + 1 hours);
         }
 
+        // Deploy Quoter (read-only helper for frontend)
+        ConvergeQuoter quoter = new ConvergeQuoter();
+
+        // Deploy Faucet (for demo purposes)
+        uint256 faucetClaimUsdc = vm.envOr("FAUCET_CLAIM_USDC", uint256(0));
+        uint256 faucetClaimRwa = vm.envOr("FAUCET_CLAIM_RWA", uint256(0));
+        uint256 faucetCooldown = vm.envOr("FAUCET_COOLDOWN", uint256(1 hours));
+        uint256 faucetFundUsdc = vm.envOr("FAUCET_FUND_USDC", uint256(0));
+        uint256 faucetFundRwa = vm.envOr("FAUCET_FUND_RWA", uint256(0));
+
+        DemoFaucet faucet;
+        if (faucetClaimUsdc > 0 || faucetClaimRwa > 0) {
+            faucet = new DemoFaucet(
+                deployed.redeemAsset, deployed.rwaToken, faucetClaimUsdc, faucetClaimRwa, faucetCooldown, deployer
+            );
+            if (faucetFundUsdc > 0) {
+                IERC20(deployed.redeemAsset).transfer(address(faucet), faucetFundUsdc);
+            }
+            if (faucetFundRwa > 0) {
+                IERC20(deployed.rwaToken).transfer(address(faucet), faucetFundRwa);
+            }
+        }
+
         vm.stopBroadcast();
 
         BaseScript.DeploymentFile memory deployment = BaseScript.DeploymentFile({
@@ -176,6 +202,8 @@ contract DeployStackScript is BaseScript {
             issuerAdapter: deployed.issuerAdapterAddr,
             iouToken: address(0),
             hook: address(hook),
+            quoter: address(quoter),
+            faucet: address(faucet),
             poolId: PoolId.unwrap(poolKey.toId())
         });
 
@@ -275,7 +303,7 @@ contract DeployStackScript is BaseScript {
             );
         }
 
-        if (deployed.issuerAdapterAddr == address(0) && block.chainid == 31337) {
+        if (deployed.issuerAdapterAddr == address(0) && (block.chainid == 31337 || block.chainid == 5042002)) {
             deployed.issuerAdapterWasDeployed = true;
             deployed.issuerAdapterAddr = address(new DeployableIssuerAdapter(deployer));
         }

@@ -59,7 +59,7 @@ export function SwapCard() {
   const quote = quoteData as { rate: bigint; feeBips: bigint; feeAmount: bigint; amountOut: bigint; maxSwappableAmount: bigint } | undefined;
 
   // Check allowance
-  const { data: allowance } = useReadContract({
+  const { data: allowance, refetch: refetchAllowance } = useReadContract({
     address: sellToken,
     abi: ERC20Abi,
     functionName: "allowance",
@@ -78,7 +78,12 @@ export function SwapCard() {
   const needsApproval = allowance !== undefined && debouncedParsedInput > 0n && (allowance as bigint) < debouncedParsedInput;
 
   const { writeContract: approve, data: approveTxHash, isPending: isApproving } = useWriteContract();
-  const { isLoading: isApproveConfirming } = useWaitForTransactionReceipt({ hash: approveTxHash });
+  const { isLoading: isApproveConfirming, isSuccess: approveSuccess } = useWaitForTransactionReceipt({ hash: approveTxHash });
+
+  // Refetch allowance after approval confirms
+  if (approveSuccess) {
+    refetchAllowance();
+  }
 
   const { writeContract: swap, data: swapTxHash, isPending: isSwapping } = useWriteContract();
   const { isLoading: isSwapConfirming, isSuccess: swapSuccess } = useWaitForTransactionReceipt({ hash: swapTxHash });

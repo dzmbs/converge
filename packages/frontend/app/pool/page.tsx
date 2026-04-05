@@ -30,14 +30,14 @@ export default function PoolPage() {
   const parsedRedeem = (() => { try { return redeemInput ? parseUnits(redeemInput, redeemDecimals) : 0n; } catch { return 0n; } })();
 
   // Allowances
-  const { data: rwaAllowance } = useReadContract({
+  const { data: rwaAllowance, refetch: refetchRwaAllowance } = useReadContract({
     address: pool?.rwaToken,
     abi: ERC20Abi,
     functionName: "allowance",
     args: address && pool?.hook ? [address, pool.hook] : undefined,
     query: { enabled: !!pool?.rwaToken && !!address && !!pool?.hook },
   });
-  const { data: redeemAllowance } = useReadContract({
+  const { data: redeemAllowance, refetch: refetchRedeemAllowance } = useReadContract({
     address: pool?.redeemAsset,
     abi: ERC20Abi,
     functionName: "allowance",
@@ -49,10 +49,14 @@ export default function PoolPage() {
   const needsRedeemApproval = redeemAllowance !== undefined && parsedRedeem > 0n && (redeemAllowance as bigint) < parsedRedeem;
 
   const { writeContract: approveRwa, data: approveRwaTx, isPending: isApprovingRwa } = useWriteContract();
-  const { isLoading: isConfirmingRwaApproval } = useWaitForTransactionReceipt({ hash: approveRwaTx });
+  const { isLoading: isConfirmingRwaApproval, isSuccess: rwaApproveSuccess } = useWaitForTransactionReceipt({ hash: approveRwaTx });
+
+  if (rwaApproveSuccess) refetchRwaAllowance();
 
   const { writeContract: approveRedeem, data: approveRedeemTx, isPending: isApprovingRedeem } = useWriteContract();
-  const { isLoading: isConfirmingRedeemApproval } = useWaitForTransactionReceipt({ hash: approveRedeemTx });
+  const { isLoading: isConfirmingRedeemApproval, isSuccess: redeemApproveSuccess } = useWaitForTransactionReceipt({ hash: approveRedeemTx });
+
+  if (redeemApproveSuccess) refetchRedeemAllowance();
 
   const { writeContract: deposit, data: depositTx, isPending: isDepositing } = useWriteContract();
   const { isLoading: isConfirmingDeposit, isSuccess: depositSuccess } = useWaitForTransactionReceipt({ hash: depositTx });

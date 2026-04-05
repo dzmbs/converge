@@ -1,14 +1,12 @@
 import Link from "next/link";
 
 const footerLinks = [
-  { label: "Docs", href: "#" },
-  { label: "GitHub", href: "https://github.com/dzmbs/antibes" },
-  { label: "Arc Testnet", href: "#" },
-  { label: "Circle CCTP", href: "https://www.circle.com/cross-chain-transfer-protocol" },
+  { label: "Docs", href: "https://github.com/dzmbs/converge#readme" },
+  { label: "GitHub", href: "https://github.com/dzmbs/converge" },
+  { label: "Arc Testnet", href: "https://testnet.arcscan.app" },
+  { label: "Circle CCTP", href: "https://developers.circle.com/cctp" },
   { label: "Uniswap v4", href: "https://docs.uniswap.org/contracts/v4/overview" },
 ];
-
-const mobileLinks = ["Docs", "GitHub", "Arc Testnet"];
 
 export function Footer() {
   return (
@@ -56,13 +54,14 @@ export function Footer() {
           CONVERGE
         </span>
         <div className="flex gap-6">
-          {mobileLinks.map((label) => (
+          {footerLinks.slice(0, 3).map((link) => (
             <Link
-              key={label}
-              href="#"
+              key={link.label}
+              href={link.href}
+              target="_blank"
               className="text-[11px] tracking-wider uppercase text-on-surface-variant hover:text-bleu transition-colors"
             >
-              {label}
+              {link.label}
             </Link>
           ))}
         </div>
